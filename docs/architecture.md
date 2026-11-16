@@ -1,5 +1,11 @@
 # Architecture
 
+## Personal-agent deployment boundary
+
+This fork runs the Nanobot controller on the trusted Mac and sends every model-directed executable action to a dedicated Linux worker VM. Model and messaging credentials, policy, authoritative task state, budgets, approvals, and validated artifact copies remain controller-owned. The controller exposes no general host-shell tool. The VM is allowed to administer itself but is not trusted to enforce its own containment or report its own health.
+
+Host-owned lifecycle operations are fixed commands that agent code cannot parameterize into arbitrary host execution. Phase 01 will enforce guest-to-host, LAN, private, link-local, multicast, and metadata network restrictions outside the guest. Phase 02 will attach the worker at the tool-registry boundary using structured requests and stable operation IDs. Until those real-environment gates pass, this repository is a development foundation and not an unattended deployment.
+
 This page maps nanobot's runtime behavior to source files. Use it when you are debugging internals, reviewing a PR, adding a provider/channel/tool, or trying to understand where a user-visible behavior comes from.
 
 For the product-level mental model, read [`concepts.md`](./concepts.md) first.

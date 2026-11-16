@@ -51,7 +51,7 @@ coverage.xml
 *.cover
 
 poetry.lock
-uv.lock
+# This fork commits uv.lock so controller builds resolve the same Python dependencies.
 
 .ipynb_checkpoints/
 
