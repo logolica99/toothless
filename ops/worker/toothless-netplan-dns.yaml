@@ -1,0 +1,6 @@
+network:
+  version: 2
+  ethernets:
+    all:
+      dhcp4-overrides:
+        use-dns: false

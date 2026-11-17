@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure Toothless trusted DNS relay
+Wants=network-online.target
+After=network-online.target systemd-resolved.service
+Requires=systemd-resolved.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/toothless/configure-dns-client
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

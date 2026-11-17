@@ -1,103 +1,89 @@
-# Mac Mini personal agent: research, features, implementation prompts, and test gates
+# Mac Mini personal agent: OpenCode engine, implementation prompts, and test gates
 
-Prepared for Jubaer Jami · November 15, 2026
+<!-- Active product specification; supersedes the Codex-engine edition. -->
 
-## 1. Recommended decision
+Updated November 16, 2026 · OpenCode primary-engine edition
 
-Build a personal assistant that receives Telegram messages, works autonomously inside a Linux virtual machine on your Mac Mini, and returns useful files and progress. Keep the controller, messaging credentials, model credentials, policies, and authoritative task records outside the worker VM.
+## 1. Recommended decision — OpenCode is the primary agent engine
 
-For building a product you understand and control, my recommendation is a small, maintained fork of **HKUDS/nanobot**, with a remote-worker adapter and durable task service added around its existing agent and messaging components. This is an engineering judgment from the documented architecture, not the result of a comparative performance benchmark or a source security audit. Inspect the exact selected revision before adopting it. The remote-worker boundary described here is **custom work**, not a claim that Nanobot already supplies this architecture.
+**Primary engine: [OpenCode](https://opencode.ai), using an explicitly selected permitted free model for the first prototype.** Use the official OpenCode CLI `opencode run` for bounded smoke tests and an OpenCode server/SDK only after verifying its current supported interface and security boundaries. OpenCode is free open-source agent software; hosted inference is a separate service. Models marked `Free` may be rate limited, changed, withdrawn, or given new pricing. Do not assume perpetual or unlimited availability.
 
-If your main goal changes to getting an existing assistant running quickly, evaluate **Hermes Agent** first, with **OpenClaw** as the integration-heavy alternative. Start with configuration and extensions; fork their core only when an extension point cannot meet a concrete need. Do not combine several complete agent runtimes into the first version.
+**Product: Telegram → trusted Mac host controller (tasks, approvals, credentials) → isolated Linux VM running OpenCode and guest tools → validated artifacts returned to host → Telegram.** This places OpenCode's built-in shell, file edits, plugin code, and other agent-executed commands inside the Linux guest, rather than attempting to make a host-launched full agent delegate only some commands. The Mac may retain an interactive OpenCode installation for *developing* this repository, but the *deployed autonomous agent* runs in the worker VM. Keep those roles distinct.
 
-No model pretraining or fine-tuning is necessary. The initial product is an application around an existing tool-calling model. Academic projects are most useful for interface design and evaluation, rather than as the entire personal-assistant product.
+**Important trust limitation:** If an OpenCode account/provider credential is stored in the VM and agent-executable code can read it, the credential is exposed to the worker trust domain. Use a separate low-privilege/free-only account where allowed, minimal account scope, non-readable credentials or a host-owned narrow provider relay if technically supported and verified. Do not claim the VM can protect secrets from its own root-capable agent. No host secrets, personal directory mounts, privileged host RPC or LAN access may be introduced to solve login issues. Host-enforced network rules must be independently tested.
 
-## 2. Research comparison
+**Cost policy:** Default to *zero authorized paid model spending*. Pick a specific currently free model using the exact provider/model ID shown by the installed OpenCode version, and enforce a controller-level allowlist. Reject unknown IDs, paid models, paid fallback, optional title/summarization models that incur cost, auto-upgrade of plan, and payment/credit purchasing. A selected model disappearing or becoming paid is a hard stop with an operator notification. A `Free` label is not a contract; audit provider/account billing settings and reported model metadata during verification. An OpenCode Console/Zen key or other provider credentials are not automatically free. No silent API key or alternate provider. Consider Codex CLI, Cursor CLI or Claude Code only as separately approved future adapters, not MVP dependencies.
 
-The capabilities below are documented project capabilities. Suitability, implementation effort, and the recommendation are my judgments. Repository contents and documentation can change; phase 00 records exact revisions, dependencies, advisories, and licenses. A feature appearing in documentation does not establish reliability on your hardware.
+**Framework decision:** Prefer a thin Python host controller plus one OpenCode runtime inside the guest. Nanobot can be selectively reused for Telegram/scheduling after review, but do not nest two autonomous agent loops. Preserve the original 16-phase plan, test gates, optional connectors, and host/worker separation. This is an implementation specification, not evidence that the Mac or provider billing has been verified.
 
-| Project | Documented starting point | What you still own for this plan | Recommendation |
+## 2. Engine choices and adoption research
+
+| Engine | Useful capability | Cost limitation | Role in this project |
 | --- | --- | --- | --- |
-| [Nanobot](https://github.com/HKUDS/nanobot) | Python personal agent, messaging channels, tools, memory, scheduling, WebUI; MIT | Separate remote execution for every relevant tool, durable task semantics, host-enforced VM networking, verification | Default fork for building your own product |
-| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Messaging gateway, memory and skills, cron, multiple terminal backends including SSH; MIT | Audit tool execution locations, isolate browser and credentials, prove recovery and budgets | Strongest ready-made alternative to trial |
-| [OpenClaw](https://github.com/openclaw/openclaw) | Personal assistant gateway, Telegram and many other channels, browser and sandbox backends; MIT | Harden configuration; verify every execution surface; add your workflow and operational checks | Strong integration-oriented alternative |
-| [Agent Zero](https://github.com/agent0ai/agent-zero) | Container-oriented assistant with browser, Linux desktop, projects and document workflows | Separate controller and credentials if matching this design; avoid optional host-access bridges | Useful if visible desktop coworking is your priority |
-| [OpenHands SDK](https://github.com/OpenHands/software-agent-sdk) | Software-agent SDK, tools, events, workspaces and remote Agent Server; MIT | Telegram, personal memory, schedules and product experience | Consider later as a specialist coding worker |
-| [LangGraph](https://docs.langchain.com/oss/python/langgraph/persistence) | Orchestration with checkpoints and long-term stores | All the messaging, tools, sandbox and product wiring | Alternative foundation for a custom application; use as a dependency rather than forking it |
-| [Browser Use](https://github.com/browser-use/browser-use) | Browser-agent library; MIT | Personal assistant, tasks, VM lifecycle and messaging | Optional browser component; not a complete foundation |
-| [AutoGen](https://github.com/microsoft/autogen) / [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | AutoGen's project recommends Agent Framework for new projects | Your personal-assistant product and worker boundary | Do not start a fresh build on legacy AutoGen tutorials |
+| [OpenCode](https://opencode.ai) | Open-source terminal agent, interactive TUI, scripted run and server, multiple providers/models | The software is free; model hosting can be free, metered or subscription-backed | **Primary deployed engine inside VM** |
+| [Codex CLI](https://github.com/openai/codex) | Official ChatGPT-account and agent orchestration integrations | Subscription limits; separate API billing if API key is used | Optional future engine adapter; host development tool can remain installed |
+| [Cursor CLI](https://cursor.com/cli) | Multi-model coding agent and headless workflows | Available models and included usage depend on Cursor plan | Optional future adapter |
+| [Claude Code](https://code.claude.com/docs) | Agentic software engineering runtime | Subscription and usage conditions apply | Optional future adapter |
+| [Nanobot](https://github.com/HKUDS/nanobot) | Telegram and assistant components | Integration/maintenance work; separate agent loop | Optional channel components only |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw) | Mature personal-assistant capabilities | Security placement and integration effort require review | Alternatives, not MVP dependencies |
 
-### Findings that change implementation choices
+**Documented OpenCode interfaces:** [CLI](https://opencode.ai/docs/cli/), [server](https://opencode.ai/docs/server/), [configuration](https://opencode.ai/docs/config/), [providers](https://opencode.ai/docs/providers/), [models](https://opencode.ai/docs/models/), [permissions](https://opencode.ai/docs/permissions/). Confirm exact flags, JSON event schemas, versions, model IDs, and defaults against the installed release rather than copying untested syntax. Configuration may merge across system, user, and project; inspect the effective configuration and inherited environment before believing a model/provider is disabled.
 
-1. **Workspace restrictions are not a VM.** Nanobot's configuration distinguishes application-level workspace guards from process isolation. Its documented shell sandboxes do not restrict network access. Use the VM and external networking controls as the boundary. [Configuration](https://github.com/HKUDS/nanobot/blob/main/docs/configuration.md), [security](https://github.com/HKUDS/nanobot/security).
-2. **OpenClaw sandboxing is documented as off by default.** Its Gateway remains outside tool sandboxes. Its SSH backend supports shell and file tools, but the capability matrix explicitly does not provide the sandboxed browser on SSH. A remote shell setting is insufficient evidence of browser placement. [Sandboxing](https://docs.openclaw.ai/gateway/sandboxing), [capability matrix](https://docs.openclaw.ai/gateway/sandboxing/supported-capability-matrix), [SSH](https://docs.openclaw.ai/gateway/sandboxing/ssh-backend).
-3. **Hermes also requires a per-tool placement review.** Its browser documentation says browser execution runs model-written Python, and browser location/configuration is a separate choice from terminal backends. A remote terminal alone is not a complete containment guarantee. [Tools](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools), [browser](https://hermes-agent.nousresearch.com/docs/user-guide/features/browser), [trust model](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md).
-4. **Shared VM networking can reach your Mac.** UTM documents host/guest visibility in shared networking. Configure and test a boundary outside the root-capable guest. [Apple backend](https://docs.getutm.app/settings-apple/devices/network/), [QEMU backend](https://docs.getutm.app/settings-qemu/devices/network/network/).
-5. **Pin and review the upstream revision.** Nanobot publishes advisories involving authorization, attachment paths and web fetching. The existence of an advisory does not establish that a selected revision is vulnerable; inspect affected/fixed ranges and the code selected for use. [Advisories](https://github.com/HKUDS/nanobot/security/advisories).
-6. **A checkpoint is not exactly-once external execution.** LangGraph offers persistence, but the application still needs operation IDs and reconciliation for side effects. Our design deliberately distinguishes task recovery from replaying an uncertain action. [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence).
+**Architectural findings:**
+1. OpenCode's tools execute in the environment running the agent. To avoid exposing the Mac host, run the autonomous OpenCode process inside a Linux VM rather than assuming a remote shell plugin moves all tool execution.
+2. A virtualized guest and OpenCode's app-level tool permission settings are *not* substitutes for an externally enforced host/LAN firewall. Test guest root, IPv4, IPv6, DNS, mounts, forwarded credentials and alternate interfaces.
+3. The built-in OpenCode free models may be temporary. Only an explicit allowlisted free provider/model may run, and billing must fail closed if price or availability changes. The operator must opt into any paid account/provider.
+4. Model quality varies. Benchmark real tool-use and data tasks using GLM/MiMo/other currently free options as available, without hard-coding names from a screenshot into a long-lived configuration.
+5. Persistence and resumption do not guarantee exactly-once execution of side effects. Maintain host-owned operation IDs, approvals and reconciliation.
 
-### Scratch versus fork versus configuration
-
-| Route | Best use | Tradeoff |
-| --- | --- | --- |
-| Configure Hermes/OpenClaw | Get a capable personal assistant quickly | You adopt their architecture and must verify that tools and accounts respect your boundary |
-| Fork Nanobot | Build your own assistant while reusing Python messaging and agent infrastructure | You maintain a fork and implement the remote execution and recovery gaps |
-| New application using existing libraries | Learn the whole system or enforce a highly specific architecture | Most integration and maintenance work; use SDKs rather than rebuilding HTTP clients and database layers |
-
-Choose the Nanobot route for the prompts below. Phase 00 is an evidence gate: if the chosen revision is unsuitable, record why and switch once, before implementation. Preserve MIT notices and inspect bundled/dependency licenses. Do not claim the whole dependency tree is MIT merely because the top-level project is.
+Review the actual OpenCode upstream revision, project license, dependency locks and security advisories at Phase 00. Preserve third-party notices, and do not conflate permission prompts with a security boundary.
 
 ## 3. Architecture and ownership
 
 ```mermaid
 flowchart TD
     U["Telegram and later dashboard"] <--> C["Trusted controller on Mac"]
-    C <--> M["Cloud model provider"]
-    C <--> S["Task database and artifacts"]
-    C --> P["Policy and tool dispatcher"]
-    P <--> W["Linux worker VM"]
-    W --> T["Terminal and installed apps"]
-    W --> B["Browser and desktop"]
-    H["Host watchdog and network boundary"] --> W
+    C <--> S["Host task DB, approvals, artifacts"]
+    C --> P["Host policy and VM dispatcher"]
+    P <--> W["Linux worker VM: OpenCode agent"]
+    W --> T["Guest terminal, code, files, package installation"]
+    W --> B["Guest browser and desktop"]
+    W <--> F["Explicitly allowlisted free model provider"]
+    H["Host watchdog and externally enforced network boundary"] --> W
 ```
 
-The controller performs fixed application logic and model API calls. It exposes no model-callable general host shell. All model-written code runs in the worker. Even browser-driver snippets belong there. The worker is allowed to administer and break its own guest. It is not trusted to enforce its own containment, tell the truth about its health, or protect secrets stored inside it.
+The controller is deterministic: it receives Telegram instructions, owns task state, applies permissions and stops/restarts worker jobs. **OpenCode performs reasoning and execution inside the Linux VM**. Development instructions for coding the project (`instruction.md`) are distinct from deployment agent operating rules (`agent-instructions.md`). Never copy the developer's host home, login material, credentials or unrestricted CLI configuration into the guest. An OpenCode session's own history is not the authoritative task database.
 
-| Component | Location and authority |
+| Component | Location / privilege |
 | --- | --- |
-| Model and Telegram API credentials | Host secret storage; narrowly injected into trusted controller processes |
-| Authoritative tasks, approvals, schedules, budgets | Host-owned database outside worker mounts |
-| Arbitrary shell, code execution, package installation | Worker VM only |
-| Browser profile and screenshots | Worker; disposable profile initially |
-| Agent-generated scripts and installed guest apps | Worker; export selected results |
-| VM start/stop/reset and network rules | Host operator/watchdog; fixed operations, not arbitrary model command strings |
-| Protected connected accounts | Controller connector with narrowly defined operations; no equivalent browser credentials in worker |
-| User-facing artifacts | Controller-managed copies of validated worker export bytes |
-
-An internet-enabled worker can transmit data you place in it. Arbitrary code plus an authenticated website session can perform the website actions that session allows. A confirmation dialog elsewhere does not remove that ability. For protected actions, enforce the restriction through a connector whose credentials the worker cannot obtain.
+| Telegram token, authoritative tasks, schedules, approvals, artifact store | Trusted Mac host |
+| Development OpenCode installation and project build work | Interactive host operator workflow, not the deployed agent |
+| Deployed OpenCode process, built-in tools, shell, browser, package installation | Linux worker VM only |
+| Free model provider configuration and limited access token if required | Dedicated guest identity where possible; **guest credential exposure is an acknowledged risk** |
+| Worker VM start/stop/reset, external firewall and policy controls | Fixed host service/operator operations, never general agent-controlled host shell |
+| Outputs | Guest export staging → host validation → host storage/Telegram |
 
 ### Initial stack
 
-- Python controller using Nanobot's existing components; preserve the selected upstream Python constraints and dependency tooling.
-- SQLite for custom task state, operation records and migrations; separate upstream conversation state only where necessary. Avoid duplicate authoritative records of the same concept.
-- FastAPI only where an internal API or later dashboard needs it.
-- SSH-based transport or a narrow authenticated RPC to the Linux VM; structured requests, never interpolated shell arguments for file names or JSON.
-- Browser automation inside the worker; begin with a small Playwright-based adapter or a proven existing adapter if it satisfies the same contract.
-- A cloud model through one tested provider adapter; models configured rather than hard-coded. Offline fake provider for deterministic tests.
-- UTM as a broadly applicable VM candidate; Tart as an Apple-silicon automation candidate after license/version review. [UTM](https://github.com/utmapp/UTM), [Tart](https://github.com/cirruslabs/tart).
-- ARM64 Ubuntu on Apple silicon, AMD64 Ubuntu on Intel. Apple documents matching Linux guest images to host architecture. [Apple](https://developer.apple.com/documentation/virtualization/creating-and-running-a-linux-virtual-machine).
+- Python host controller, SQLite transactions and task/operation IDs, with narrow SSH or authenticated guest transport and bounded artifact collection. FastAPI only if needed.
+- **OpenCode inside the VM**, first using `opencode run` with a verified explicit `provider/model` argument; consider an authenticated private `opencode serve` interface later. Never expose an unprotected OpenCode server to LAN/internet; avoid binding `0.0.0.0` by default.
+- A currently supported Linux ARM64 distribution for Apple Silicon, or an appropriate guest for Intel, using Tart or UTM after hardware and license checks. Do not silently provision global firewall changes.
+- Model options configured and allowlisted, never assumed from a screenshot. Always confirm the current label, cost, model availability, and real run behavior in Phase 00/05. Disable any implicit paid `small_model`, retries, model switching, or provider fallback.
+- Offline fake OpenCode adapter/event fixtures to test orchestration deterministically. Real free-model checks are separate and may face rate limits or external service changes.
+- One worker, one active task, bounded RAM/vCPUs/disk and time/tool/output budgets. Minimal watchdog and log redaction from the beginning.
 
-Suggested starting allocations, not minimum requirements or measured performance: on a 16 GB Mac try a 4 GB worker with 2–4 vCPUs; on a 24/32 GB Mac try 6–8 GB. Use a bounded virtual disk, one worker, and one active task. On an 8 GB Mac trial a headless worker first. Confirm actual free memory/disk and workload before committing resources.
+Suggested starting VM allocation (not a benchmark): a 16 GB Mac can try ~4 GB guest RAM and 2–4 vCPUs; a 24/32 GB Mac can try 6–8 GB. Confirm actual headroom and guest workload first.
 
 ## 4. Complete feature map and delivery order
 
 | ID | Features | User outcome | Release |
 | --- | --- | --- | --- |
-| 00 | Source selection, version pin, license/advisory review, baseline tests | Reproducible foundation | Foundation |
+| 00 | OpenCode installation, free-model and billing safety proof of concept; version pin, baseline checks | Verified free-model-first foundation | Foundation |
 | 01 | VM, host/LAN isolation, clean image, stop/reset | Own isolated working computer | Foundation |
 | 02 | Remote commands, processes, files, guest package installation | Agent can actually do work | Foundation |
 | 03 | Private Telegram, attachments, commands, deduplication | Message it from anywhere | MVP |
 | 04 | Durable tasks, steering, cancellation, progress, recovery | Long jobs remain controllable | MVP |
-| 05 | Model tool loop, policy dispatch, budgets, clarification | General autonomous execution | MVP |
+| 05 | OpenCode sessions, tool confinement, policy dispatch, free-model and quota limits | Controlled free-model autonomous execution | MVP |
 | 06 | CSV analysis, reproducible scripts, validated exports, file delivery | First useful research workflow | MVP |
 | 07 | Public research, browser interaction, downloads, source records | Work across websites and files | Useful assistant |
 | 08 | Editable memory, project context, reusable versioned workflows | Less repeated instruction | Useful assistant |
@@ -109,97 +95,106 @@ Suggested starting allocations, not minimum requirements or measured performance
 | 14 | Independent evaluation pack, adversarial inputs, fault injection | Evidence the system works | Every release |
 | 15 | Multiple isolated workers, bounded delegation | Parallel work when justified | Later |
 
-Build order: 00 → 01 → 02 → 03 → 04 → 05 → 06. Add a minimal watchdog and logs during those phases. Finish 13 and the applicable 14 checks before unattended deployment. Then add 07–12 as needed. Phase 15 comes last.
+Build order: 00 (including OpenCode free-model proof of concept) → 01 → 02 → 03 → 04 → 05 → 06. Add a minimal watchdog and logs during those phases. Finish 13 and the applicable 14 checks before unattended deployment. Then add 07–12 as needed. Phase 15 comes last.
 
 ## 5. How to use the prompts
 
-Give your coding LLM the master prompt once, then one implementation prompt at a time. Run that section's test prompt after the change. Carry forward the repository, decision records and status files, rather than relying on a long chat transcript. The prompts are instructions for future implementation; no assistant has installed the service, created a Telegram bot, or verified your Mac by producing this playbook.
-
-The prompts intentionally avoid assuming a particular upstream module path or config schema. Locate it in the pinned checkout. Do not make up compatibility. Separate deterministic tests from optional real-provider and real-VM tests. A mock test does not establish isolation on a Mac.
+Give the **development assistant on the host** this master prompt once, then one phase prompt at a time. The host's existing Codex or OpenCode installation may develop the project; that is distinct from the deployed OpenCode in the guest. Record actual evidence in `reports/`, `docs/status.md` and an operator checklist. An unrun test is NOT RUN, not PASS.
 
 ### Master prompt
 
 ```text
-You are implementing my personal AI assistant on a home Mac Mini.
-Use this playbook as the product specification. Default foundation:
-a small maintained fork of https://github.com/HKUDS/nanobot, subject to
-phase 00 inspection. Reuse working upstream components and preserve licenses.
-Execute only the phase I provide next. Produce code and verification, not just a plan.
+You are implementing my personal AI assistant on a Mac Mini. Read instruction.md
+and follow its OpenCode-first architecture. Build only the assigned phase.
 
-Product: Telegram first, custom dashboard later. The agent may install software,
-write code, browse and operate apps in its Linux worker VM. The trusted controller,
-secrets, permissions, budgets and authoritative task state stay outside that VM.
-Every arbitrary-code surface, including browser scripts and custom tool code,
-must execute in the worker. Never expose a generic host-shell tool. Keep host
-administrative operations fixed, operator-owned and inaccessible to agent code.
+Deployed runtime: OpenCode inside an isolated Linux worker VM with a specifically
+allowlisted free provider/model. Trusted host: Telegram, approvals, task database,
+fixed worker lifecycle controls, artifact validation and task scheduling.
+Keep development assistant and deployed runtime separate. Avoid two agent loops.
 
-Inspect repository instructions, selected revision, schemas and tests before editing.
-Do not replace a working upstream subsystem just to match a suggested directory name.
-Reuse the existing tool registry/provider/channel components where possible.
-Use typed contracts, structured serialization, schema migrations and bounded outputs.
-Maintain docs/architecture.md, docs/features.md, docs/status.md and decision records.
-Record the exact upstream SHA and dependency lock; never invent current model IDs.
-Keep policy and approvals enforced by trusted code. Treat external content as data.
-No worker access to host secrets, home mounts, clipboard, SSH-agent forwarding,
-Docker socket, personal browser profile or arbitrary host RPC.
+NO paid inference by default. Never silently add API-key billing, credits, paid
+model fallbacks, auto-paid small models, or automatic spending. If model
+availability/pricing cannot be verified, STOP and ask the operator. Free labels
+may change. Document current approved model ID, evidence and quota limits.
 
-Make reasonable reversible implementation choices and finish the requested phase.
-Ask only for genuinely missing credentials, hardware facts or product decisions.
-Never print secrets. Provide placeholders and an operator setup step for credentials.
-Do not operate real third-party accounts or submit external side effects as tests.
-Host/root/network configuration must have a reviewed explicit installation step;
-never silently rewrite the Mac's firewall or disable existing protections.
+No generic agent-accessible host shell, user-home mounts, SSH-agent forwarding,
+clipboard, host Docker socket, or personal browser profile. The guest can break
+its own installation; enforce boundaries on the host/gateway and actually test.
+Guest-owned provider credentials are at risk from guest execution; never claim
+otherwise. Use official current OpenCode CLI/server APIs, not invented flags.
 
-Run relevant backend, integration and fault tests. Browser interaction is a product
-capability, but use manual UI/browser acceptance steps rather than introducing
-automated UI test suites unless I request them. API and adapter contract tests are fine.
-When Mac/VM/credentials are unavailable, label those checks NOT RUN and provide exact
-operator steps; do not count mocks as deployment proof. Never claim full safety.
+Reuse working code and official extension points; keep typed contracts, bounded
+outputs, operation IDs, host-held authoritative state, logs and secret redaction.
+Run deterministic tests, integration checks and available real guest checks.
+Manual browser acceptance rather than Playwright/browser UI test suites unless
+I explicitly request those. Do not silently change host firewall/network rules.
 
-End each phase with changed behavior, relevant files, exact checks and results,
-remaining blockers, and a short manual demo. Save test evidence under reports/.
-Update phase status to implemented / verified / blocked with evidence separately.
-Do not enable later features or expand account access incidentally.
+End with changed behavior, files, exact commands and PASS/FAIL/NOT RUN results,
+blockers, manual demo and reports/phase-XX.md. Never proceed without approval.
 ```
 
 ## 6. Phase-by-phase implementation and test prompts
 
-### 00 — Foundation and upstream adoption
+### 00 — Foundation and OpenCode free-engine proof of concept
 
-Features: fork decision, reproducible checkout, development environment, baseline quality checks. Gate: a documented build path with no guessed versions.
+Features: inspect existing OpenCode installation, pin version/config, verify models/prices, exercise read-only CLI tasks and capture structured output. **Gate:** one real explicitly free-model task works without any paid API key, and the model selection and billing configuration are reviewed.
 
 **Implementation prompt**
 
 ```text
-Implement phase 00. Inspect HKUDS/nanobot's current stable release candidates,
-source instructions, Python constraints, tool/channel/provider extension points,
-tests, top-level license and relevant third-party notices. Review published
-security advisories and affected/fixed ranges for the exact candidate. Record
-unknowns rather than declaring a revision safe from its release date alone.
+Implement phase 00 ONLY. Read instruction.md and inspect the current repository.
+Confirm installed OpenCode version (`opencode --version`), CLI flags via
+`opencode run --help`, available models via documented CLI/TUI, effective user and
+project config, inherited provider environment, and authentication status without
+printing any token. If OpenCode exists on the host as a development tool, do not
+copy its credentials into the VM or assume it is the deployed runtime.
 
-Create or prepare a maintained fork/local checkout with upstream remote and pin
-the chosen SHA. If GitHub fork permission is unavailable, prepare locally and
-document the exact fork step. Preserve upstream attribution. Run its documented
-baseline checks before modifying behavior and record pre-existing failures.
-Create architecture and feature status documents, an upstream map identifying
-what we reuse/change/add, dependency locks and secret-free example configuration.
-Create a fake provider and worker contract fixture for future tests. Add CI for
-relevant lint/types/tests using existing tooling. Do not implement the whole app.
-If a blocking upstream problem makes adoption unsuitable, document concrete
-evidence and select one alternative before continuing.
+Select one *currently* free provider/model from the real installed model catalog;
+record its exact ID, official price/availability evidence, date, rate/usage limits
+and privacy considerations. Use a separate account if practical. Do not auto-add
+billing information or purchase OpenCode Zen credits. A free model is not guaranteed
+permanently. Explicitly constrain model selection and secondary/small models;
+reject paid or unknown providers at the trusted controller rather than relying
+on a prompt. Remove or mask inherited paid-provider credentials for this test.
+
+In a disposable, non-sensitive directory, run one harmless task via the documented
+`opencode run` CLI with explicit model ID, preferably JSON events if supported.
+Capture event stream/schema, result, exit status, latency, usage when reported,
+errors and timeout behavior. No uncontrolled host file/shell test. On first POC,
+use a read-only tool profile or no executable tools if supported. A successful
+prompt does NOT prove host isolation; Phase 01 is still mandatory.
+
+Write a minimal fake OpenCode execution adapter, inspect the official server and
+SDK options for future sessions/streaming/interrupt/approval, record the exact
+OpenCode revision, dependency lock, license/notice and upstream risk review.
+Keep Nanobot optional for Telegram plumbing only. Create/update docs/architecture.md,
+docs/features.md, docs/status.md and reports/phase-00.md. Do not provision the VM.
 ```
 
 **Test prompt**
 
 ```text
-Verify phase 00 from a clean temporary checkout. Install using the documented
-locked workflow; run baseline checks and a fake-provider conversation. Confirm
-the recorded SHA is real and matches the checkout, secret placeholders are not
-credentials, ignored local secrets stay untracked, and license notices survive.
-Report baseline failures separately from new regressions. Verify that phase 01
-can build on explicit extension points instead of an assumed module name.
-Deliver reports/phase-00.md with commands, exit codes and unresolved advisories.
+Verify phase 00: installed version and supported flags; explicitly selected
+free model; actual response and event parser; no provider token leaked; no paid
+model selected; no unauthorized files changed. Simulate model removal, rate limit,
+missing auth, malformed stream, timeout and network outage. Verify every case
+stops or returns a clearly typed error, never falls back to a paid provider.
+Distinguish genuine provider observations from fake traces. Record PASS/FAIL/NOT
+RUN. Block the next phase if a paid default or unknown billing path remains.
 ```
+
+**Operator smoke test** (verify flags against installed help before running):
+
+```bash
+opencode --version
+opencode run --help
+# Verify the exact provider/model identifier in your current OpenCode model list.
+# In a disposable directory, replace the placeholder with that verified FREE ID:
+mkdir -p /tmp/mac-mini-opencode-poc && cd /tmp/mac-mini-opencode-poc
+opencode run --model 'PROVIDER/VERIFIED_FREE_MODEL' 'Reply with exactly READY. Do not use tools.'
+```
+
+Do not confuse a free CLI binary with free frontier-model inference.
 
 ### 01 — Worker VM and externally enforced isolation
 
@@ -346,40 +341,47 @@ external effect must remain unknown/waiting for reconciliation. Inspect database
 state and operation traces independently; a plausible chat reply is not evidence.
 ```
 
-### 05 — General agent loop, policy and spending controls
+### 05 — OpenCode autonomous sessions, policy, tool isolation, and cost controls
 
-Features: tool calling, autonomous continuation, clarification, bounded work and configurable model provider. Gate: policy and budget checks survive malformed model output.
+Features: OpenCode task sessions, event streaming, steering/cancel, safe tool execution and free-only model control. **Hard gate:** OpenCode agent code cannot run on the Mac host and cannot silently invoke paid inference.
 
 **Implementation prompt**
 
 ```text
-Implement phase 05 using the existing provider/agent loop where possible. Connect
-the durable task service and remote tools. Require schema-valid tool arguments,
-bounded tool results, cancellation checks and capability checks before dispatch.
-Treat websites, attachments and tool output as data that cannot change permissions.
-Support final response, clarification and tool-call outcomes; retain model/tool
-events without saving private reasoning as a product feature. Add context limits
-and compaction with source references for preserved facts. One configured model
-initially; no autonomous fallback to a more expensive provider.
-Enforce task call/token/time ceilings and a host-owned spend ledger, with atomic
-reservations before model calls, bounded output tokens, reconciled actual usage
-and versioned price configuration. If pricing/usage is unknown, report unknown
-and apply conservative call/token limits. Count related delegated/tool-provider
-charges where applicable. Add retry limits/backoff for transient provider failures;
-never retry an effect merely because the model request failed. Add fake provider.
+Implement Phase 05 using the tested OpenCode release and official CLI/server or
+SDK interface from Phase 00. Run the DEPLOYED OpenCode in the Linux worker VM.
+Do not host-launch an unrestricted agent subprocess merely because its shell
+plugin points at the VM. Audit built-in bash, file edits, patches, browser,
+plugins, MCP tools, delegated agents, network endpoints and inherited credentials.
+Use a narrow host task/operation transport; prohibit host shell or arbitrary host
+RPC. Host policy gates approvals, cancellation, export and budgets. Guest agent
+permissions add defense in depth but are not the isolation boundary.
+
+Set an explicit permitted model allowlist, enforce it before every task/session,
+and validate any effective model and optional small_model. Prohibit automatic
+switch to paid/unknown model, alternate provider, paid credits or metered key.
+Handle rate limit, disappeared free model, auth expiry, pricing uncertainty and
+network failure by pausing and notifying the user, never by switching silently.
+If price cannot be independently established, fail closed. Keep guest secrets
+minimal and document credential theft risk from arbitrary guest execution.
+
+Support bounded runtime, messages, tool calls, outputs, cancellation, durable
+operation IDs, result validation, safe artifact export and redacted logging. Treat
+all documents, webpages, Telegram messages and tool output as untrusted data.
+No capture of private model reasoning. Add fake OpenCode event fixtures for tests.
 ```
 
 **Test prompt**
 
 ```text
-Verify phase 05 with fake-provider traces: malformed JSON, nonexistent tool,
-policy bypass instruction, repeated failing tool, provider outage, overlong output,
-context compaction and cancelled task. Test budget reservation races, unknown
-usage, rejected overspend and no hidden provider fallback. Demonstrate a multi-step
-guest task and a request requiring clarification. Attempt to invoke host exec
-through every registered tool. Supply an injected document asking to disable
-policy; no capability change may occur. Run a separately capped real-provider
-smoke only when configured; report its actual usage, model and date.
+Verify real worker-only command placement, no host file access, no host/LAN
+reachability despite guest root; invalid tool requests, injected instructions,
+malformed events, cancelled tasks and orphan processes. Simulate free-model
+unavailability, price changes, rate limits and an unauthorized paid model ID;
+confirm STOP/NOTIFY rather than fallback. Confirm no payment or additional
+provider usage occurred. Run a bounded benign multi-step task inside the VM and
+check returned artifacts independently. Record actual traces and PASS/FAIL/NOT
+RUN; do not count fake tests as real VM isolation.
 ```
 
 ### 06 — First useful workflow: data to checked deliverables
@@ -721,50 +723,53 @@ leave it disabled by default and retain the simpler operating mode.
 
 Every phase report should contain a table with check, environment, command/manual action, expected outcome, observed outcome, evidence path and PASS/FAIL/NOT RUN. Keep implemented and deployed distinct. Record pre-existing upstream failures. Never weaken an assertion merely to get a green result.
 
-Use deterministic tests for authorization, leases, serialization, scheduling, export and budgets. Use integration checks for real VM boundaries and process control. Use fault injection for restarts and unknown effects. Use manual UI acceptance for visual browser/dashboard/desktop flows. Use a capped real-model evaluation for autonomous task success. These layers answer different questions.
+Use deterministic tests for authorization, leases, serialization, scheduling, export and budgets. Use integration checks for real VM boundaries and process control. Use fault injection for restarts and unknown effects. Use manual UI acceptance for visual browser/dashboard/desktop flows. Use a capped, explicitly approved free-model OpenCode evaluation for autonomous task success (subject to availability and rate limits). These layers answer different questions.
 
 The root-capable guest is disposable and untrusted. Host network containment must be validated against the actual virtualization path. Merely denying one HTTP URL, running a guest firewall or testing a file-path guard is insufficient. Conversely, a successful finite boundary test suite is evidence about those tests, not proof of immunity to hypervisor vulnerabilities or arbitrary prompt injection.
 
 The controller can provide at-most-once logical dispatch using records and keys. Delivery systems and external services may still have unknown outcomes; reconciled status and explicit unknown states are more honest than a blanket exactly-once promise. Task cancellation cannot undo external effects already completed.
 
-A budget ledger bounds admission based on its pricing assumptions and reservations. Provider billing may differ due to delayed usage, separately charged tools or changed prices. Use provider-side limits when available and periodically reconcile bills; display estimated and confirmed amounts separately.
+A free-model usage ledger is not a guarantee of future free service. Track selected provider/model, task counts, session duration, reported usage, rate limits and any cost metadata. If pricing is unknown or changes, STOP rather than risk a charge. No automatic credit purchasing, paid fallback or silent metered charging is permitted.
 
-No expensive model training, Kubernetes, vector database, native mobile app or multi-agent hierarchy is required for the MVP. Add them only for a demonstrated feature or reliability requirement.
+No paid LLM API dependency, expensive model training, Kubernetes, vector database, native mobile app or multi-agent hierarchy is required for the MVP. Add them only for a demonstrated feature or reliability requirement.
 
 ## 8. Practical first demo and milestone sizing
 
 Start with a small synthetic CSV rather than real private research data. Message: “Compare these two cases, plot E11/E22/E33/G12 against time in microseconds, and send the plots, processed CSV and script.” It should clarify unknown scientific conventions, execute inside the guest, show meaningful progress, validate numeric results and deliver usable files. Then interrupt a second run and restart the controller to test recovery.
 
-Planning ranges for one developer assisted by a coding LLM, not measured commitments: foundation and isolation 3–7 focused days; Telegram-to-CSV MVP another 5–10; persistence/browser/memory/schedules and operations another 1–3 weeks; accounts, custom app and optional desktop/voice another 2–4+ weeks. Familiarity, Mac constraints and upstream integration gaps can dominate. A usable configured assistant can be much faster than building this maintainable custom architecture. Do not compress the isolation and recovery checks to meet an estimate.
+Planning ranges for one developer using a coding assistant during development, not measured commitments: foundation and isolation 3–7 focused days; Telegram-to-CSV MVP another 5–10; persistence/browser/memory/schedules and operations another 1–3 weeks; accounts, custom app and optional desktop/voice another 2–4+ weeks. Familiarity, Mac constraints and upstream integration gaps can dominate. A usable configured assistant can be much faster than building this maintainable custom architecture. Do not compress the isolation and recovery checks to meet an estimate.
 
 ## 9. Research and reference index
 
-Official repositories/documentation and original research used in the comparison and design:
+**OpenCode sources (check the current revision during implementation):**
 
-1. [Nanobot repository](https://github.com/HKUDS/nanobot) — personal-agent foundation and license.
-2. [Nanobot architecture](https://github.com/HKUDS/nanobot/blob/main/docs/architecture.md) — extension points and component responsibilities.
-3. [Nanobot configuration](https://github.com/HKUDS/nanobot/blob/main/docs/configuration.md) — workspace and shell isolation distinctions.
-4. [Nanobot security](https://github.com/HKUDS/nanobot/security) and [advisories](https://github.com/HKUDS/nanobot/security/advisories) — revision review and known issue classes.
-5. [Hermes Agent](https://github.com/NousResearch/hermes-agent) — existing messaging, memory, schedules and terminal backends.
-6. [Hermes tool reference](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools) — tool categories and placement review.
-7. [Hermes browser documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/browser) — browser execution and deployment modes.
-8. [Hermes security policy](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) — containment trust model.
-9. [OpenClaw](https://github.com/openclaw/openclaw) — integration-oriented personal assistant.
-10. [OpenClaw sandboxing](https://docs.openclaw.ai/gateway/sandboxing) — default behavior and execution boundary.
-11. [OpenClaw capability matrix](https://docs.openclaw.ai/gateway/sandboxing/supported-capability-matrix) — backend differences.
-12. [OpenClaw SSH sandbox](https://docs.openclaw.ai/gateway/sandboxing/ssh-backend) — remote shell/files utility contract.
-13. [OpenClaw Telegram](https://docs.openclaw.ai/channels/telegram) — existing channel implementation.
-14. [Agent Zero](https://github.com/agent0ai/agent-zero) — desktop/browser-oriented alternative.
-15. [OpenHands SDK](https://github.com/OpenHands/software-agent-sdk) and [SDK paper](https://arxiv.org/abs/2511.03690) — reusable software-agent infrastructure.
-16. [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) — checkpoint versus durable cross-thread state.
-17. [Browser Use](https://github.com/browser-use/browser-use) — optional browser component.
-18. [AutoGen](https://github.com/microsoft/autogen) and [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) — current upstream direction for new projects.
-19. [Telegram Bot API](https://core.telegram.org/bots/api) — updates, polling, file and callback semantics.
-20. [Apple Linux virtualization](https://developer.apple.com/documentation/virtualization/creating-and-running-a-linux-virtual-machine) — matching guest architecture and VM setup.
-21. [UTM](https://github.com/utmapp/UTM), [Apple network settings](https://docs.getutm.app/settings-apple/devices/network/), [QEMU network settings](https://docs.getutm.app/settings-qemu/devices/network/network/) — host/guest network behavior.
-22. [Tart](https://github.com/cirruslabs/tart) — Apple-silicon VM automation candidate; review current repository/license at adoption.
-23. [SWE-agent paper](https://arxiv.org/abs/2405.15793) — evidence that agent-computer interface design matters; not a claim of performance for this assistant.
-24. [OSWorld](https://github.com/xlang-ai/OSWorld) — real-environment task evaluation inspiration, not a personal-assistant framework.
-25. [AgentDojo](https://github.com/ethz-spylab/agentdojo) — prompt-injection and useful-task evaluation inspiration, not a security certification.
+1. [OpenCode home](https://opencode.ai/) and [GitHub](https://github.com/anomalyco/opencode) — current software, repository and license.
+2. [OpenCode CLI](https://opencode.ai/docs/cli/) — `opencode run`, flags, models and scripted usage.
+3. [OpenCode models](https://opencode.ai/docs/models/) — selection, model identifiers and available options.
+4. [OpenCode providers](https://opencode.ai/docs/providers/) — authentication/provider choices and pricing distinctions.
+5. [OpenCode configuration](https://opencode.ai/docs/config/) — merged settings, default/small models and permissions.
+6. [OpenCode server](https://opencode.ai/docs/server/) and [SDK](https://opencode.ai/docs/sdk/) — API/session capability review.
+7. [OpenCode Console models](https://opencode.ai/docs/console/models/) — metered console credits and optional accounts, not proof all models are free.
+8. [OpenCode permissions](https://opencode.ai/docs/permissions/) — application tool controls, not equivalent to VM isolation.
 
-Research scope: reviewed public repositories, documented architecture, trust boundaries and original evaluation projects. This was not a hands-on benchmark of the frameworks, full dependency audit, penetration test or verification of the user's Mac. Exact revision selection and real deployment tests are intentionally phase 00/01 gates.
+**Infrastructure and evaluation references:**
+
+9. [Tart](https://github.com/cirruslabs/tart), [UTM](https://github.com/utmapp/UTM), [Apple virtualization](https://developer.apple.com/documentation/virtualization/creating-and-running-a-linux-virtual-machine).
+10. [Telegram Bot API](https://core.telegram.org/bots/api).
+11. [Nanobot](https://github.com/HKUDS/nanobot), [OpenClaw](https://github.com/openclaw/openclaw), [Hermes Agent](https://github.com/NousResearch/hermes-agent) — optional components/alternatives.
+12. [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) — checkpoints vs durable side effects.
+13. [AgentDojo](https://github.com/ethz-spylab/agentdojo), [OSWorld](https://github.com/xlang-ai/OSWorld) — evaluation inspiration, not certification.
+
+Research and model catalog observations are not security audits, cost guarantees, or hands-on verification of this user's Mac Mini.
+
+## 10. OpenCode-specific decisions and maintenance notes (2026-11-16)
+
+- **Development vs deployed agent:** Using OpenCode (or Codex) on the Mac to *develop this repository* is different from the deployed OpenCode worker that runs untrusted tasks inside the VM. Never equate the host's development CLI session with runtime sandboxing.
+- **Current workflow:** Phase 00 free-model POC → Phase 01 host-enforced Linux VM isolation → Phase 02 authenticated transport → Phase 03 Telegram → Phase 04 task durability → Phase 05 autonomous OpenCode in guest → Phase 06 useful data workflow. Phase 13 and relevant Phase 14 checks before unattended use.
+- **Model choice:** Only a model explicitly verified as free at runtime is allowed by default. The free model list shown in a UI can change. No particular GLM, MiMo, Nemotron, Beam or other free label is assumed permanent. Log exact selected model and price evidence, but never provider credentials.
+- **Automatic fallback:** Disable default paid model, implicit small-model selection when chargeable, model re-routing, paid provider retry, and credit purchasing. Do not assume settings alone work; test enforcement at the trusted controller and verify effective CLI/server configuration.
+- **Privacy:** A hosted free model still sends prompts/data to an external service. Check vendor data policies and limit task data accordingly. Do not send personal secrets or protected account sessions into the guest/provider.
+- **Credentials:** If the guest possesses OpenCode provider credentials and the assistant executes arbitrary guest code, those credentials are potentially discoverable. A VM isolates the host from the guest; it does not isolate secret files from root inside the guest. Record and address this risk before unattended operation.
+- **Server transport:** Never expose unauthenticated `opencode serve` endpoints publicly or on the LAN. Use authenticated narrow control interfaces and verify how OpenCode actually handles access and tools for the pinned version.
+- **Optional engines:** Codex CLI, Claude Code or Cursor CLI may be separately added later via tested engine adapters; none may be a silent billing fallback. The existing host Codex installation does not need removal.
+- **Original playbook terminology:** Any remaining references to provider, model request or tool loop must be interpreted through OpenCode's documented session/event/tool interfaces. Do not fabricate a low-level chat-completions tool-call protocol that OpenCode does not expose.

@@ -1145,8 +1145,8 @@ name = "h2"
 version = "4.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "hpack" },
-    { name = "hyperframe" },
+    { name = "hpack", marker = "python_full_version < '3.14'" },
+    { name = "hyperframe", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e7/85/7c366e69d84c17bb778fe41419e1fbcce3033d5b7ce29bbffff0a98b859f/h2-4.4.1.tar.gz", hash = "sha256:4e866ffb1a869ae14dd9b5e6beb5c24a13da0495ad72b65925ded182521c1516", size = 2157281, upload-time = "2026-08-03T11:45:09.509Z" }
 wheels = [
@@ -1221,7 +1221,7 @@ wheels = [
 
 [package.optional-dependencies]
 http2 = [
-    { name = "h2" },
+    { name = "h2", marker = "python_full_version < '3.14'" },
 ]
 socks = [
     { name = "socksio" },
@@ -2110,6 +2110,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "ddgs" },
     { name = "defusedxml" },
+    { name = "dnspython" },
     { name = "dulwich" },
     { name = "filelock" },
     { name = "httpx", extra = ["socks"] },
@@ -2212,6 +2213,7 @@ requires-dist = [
     { name = "ddgs", specifier = ">=9.16.1,<10.0.0" },
     { name = "defusedxml", specifier = ">=0.7.1,<1.0.0" },
     { name = "defusedxml", marker = "extra == 'documents'", specifier = ">=0.7.1,<1.0.0" },
+    { name = "dnspython", specifier = ">=2.9.2,<3.0.0" },
     { name = "dulwich", specifier = ">=1.2.20,<2.0.0" },
     { name = "filelock", specifier = ">=3.25.2" },
     { name = "hatchling", marker = "extra == 'dev'" },
@@ -2498,9 +2500,9 @@ name = "olostep"
 version = "1.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpx", extra = ["http2"] },
-    { name = "pycountry" },
-    { name = "pydantic" },
+    { name = "httpx", extra = ["http2"], marker = "python_full_version < '3.14'" },
+    { name = "pycountry", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/38/0ca7b7077a975274f27a4a23d97e31791e7e528e49f9d86a679357a5098f/olostep-1.2.3.tar.gz", hash = "sha256:390db9a93b65a8784b11380b77ac3858e91c1c3c3da3ee1cf8b7727b5b5d9a97", size = 79937, upload-time = "2026-11-08T17:22:06.86Z" }
 wheels = [
@@ -4470,8 +4472,8 @@ name = "uvicorn"
 version = "0.54.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
