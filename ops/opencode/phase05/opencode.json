@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/glm-5.3",
+  "update": "disable",
+  "permission": {
+    "*": "deny"
+  },
+  "tools": {
+    "*": false
+  },
+  "plugin": [],
+  "mcp": {},
+  "agent": {
+    "toothless-readonly": {
+      "description": "Toothless bounded answer agent; all model tools remain denied",
+      "mode": "primary",
+      "model": "opencode-go/glm-5.3",
+      "steps": 5,
+      "permission": {
+        "*": "deny"
+      }
+    }
+  }
+}

@@ -1,75 +1,157 @@
-<p align="center"><img src="images/toothless-logo.png" alt="Toothless" width="360"></p>
+<p align="center"><img src="images/toothless-logo.png" alt="Toothless dragon logo" width="320"></p>
 
 <h1 align="center">Toothless</h1>
 
-<p align="center">A security-first personal agent project with a separately isolated Linux worker.</p>
+<p align="center">A personal AI agent with a trusted Mac controller and an isolated Ubuntu worker.</p>
 
-<p align="center"><strong>Operator-driven today. Autonomous execution remains disabled.</strong></p>
+<p align="center"><strong>Owner-approved tasks. Protected worker. No unattended execution.</strong></p>
 
-## What Toothless is
+## What Toothless does
 
-Toothless is a personal-agent system built around a trusted Mac controller and a bounded Ubuntu worker VM. The controller owns execution policy, SSH identity, durable operation records, and fixed VM lifecycle actions. OpenCode is the selected AI engine; its verified Phase 00 host adapter has no tools and cannot run model-generated commands. The worker interface can execute explicitly submitted operations inside Ubuntu, but it is not exposed to the model.
+Toothless lets its owner create and manage tasks from a private Telegram chat. When the owner explicitly approves a task with `/run`, the Mac controller sends it to OpenCode running inside an isolated Ubuntu virtual machine. OpenCode returns an answer; the controller stores it on the Mac and delivers it to Telegram.
 
-This repository reuses selected foundations from [Nanobot](https://github.com/HKUDS/nanobot), including its Python gateway and project structure. Nanobot's broader channels, WebUI, automations, and agent features are not automatically Toothless features. See [the reuse decision](docs/decisions/0001-adopt-nanobot-v0.4.1.md), [upstream map](docs/upstream-map.md), [LICENSE](LICENSE), and [third-party notices](THIRD_PARTY_NOTICES.md).
+Toothless is designed to keep AI execution out of the Mac host. The controller owns identity checks, approvals, task records, execution records, and VM lifecycle controls. The Ubuntu worker runs the selected model. Model tools are disabled, so OpenCode cannot use shell, file-editing, browser, or MCP tools at this checkpoint.
 
-## Implemented and verified
+## Architecture
 
-| Area | Current capability | Evidence |
+```mermaid
+flowchart LR
+    Owner["Owner<br/>private Telegram chat"]
+    Controller["Mac controller<br/>owner checks · task approvals<br/>Telegram dedupe · SQLite records"]
+    SSH["Pinned-key SSH<br/>no agent forwarding"]
+    Worker["Ubuntu 24.04 ARM64 worker<br/>Tart + Softnet"]
+    Runner["Fixed Toothless runner<br/>bounded request and output"]
+    OpenCode["OpenCode CLI 2.3.0<br/>opencode-go/glm-5.3<br/>model tools denied"]
+    Records[("Host-owned task<br/>and execution databases")]
+    DNS["Host DNS relay<br/>TCP/UDP 55353 only"]
+    Internet["Public network<br/>model and HTTPS access"]
+
+    Owner -->|"Outbound long polling"| Controller
+    Controller <--> Records
+    Controller -->|"approved task + execution ID"| SSH
+    SSH --> Worker
+    Worker --> Runner --> OpenCode
+    OpenCode --> Runner --> SSH
+    SSH -->|"bounded answer or error"| Controller
+    Worker -->|"DNS queries"| DNS
+    Worker -->|"public egress"| Internet
+```
+
+The controller runs on the Mac and accepts messages only from the configured numeric owner ID in a private Telegram chat. It uses outbound Telegram polling; it does not expose a public webhook or inbound service. The host stores task state and execution history in separate owner-private SQLite databases.
+
+Tart runs Ubuntu through Softnet. The protected launcher applies and verifies a directional block on new guest connections to the Mac, with DNS restricted to the validated host relay. Public IPv4 access remains available for OpenCode inference and HTTPS. SSH is initiated from the Mac using a pinned guest host key and a dedicated Ed25519 identity.
+
+## Implemented features
+
+| Phase | Capability | Status |
 |---|---|---|
-| OpenCode boundary | Bounded CLI adapter for the explicit model `opencode-go/glm-5.3`; structured results and errors, timeout/cancellation, output limits, deny-all tools, and no paid-model fallback. | [Phase 00 report](reports/phase-00-final.md) |
-| Isolated worker | Pinned Tart and Softnet setup for the documented Apple silicon Mac profile; bounded Ubuntu 24.04 ARM64 VM; protected launcher applies and verifies host-gateway isolation. | [Worker operator guide](docs/worker-vm.md), [Phase 01 report](reports/phase-01-final.md) |
-| DNS and network controls | Validated, rate-limited host DNS relay on the dynamically assigned Softnet gateway and port 55353; public DNS/HTTPS, key-only SSH, and owned endpoint isolation passed for the current deployment profile. | [Phase 01.7 report](reports/phase-01.7.md), [Phase 01 final report](reports/phase-01-final.md) |
-| Worker operations | Typed execute, poll, terminate, and workspace file operations through key-only SSH with a pinned guest host key, bounded output, timeouts, and explicit unavailable/unknown outcomes. No local execution fallback. | [Phase 02.1 report](reports/phase-02-01.md), [Phase 02.2 report](reports/phase-02-02.md) |
-| Recovery | Host-owned SQLite records persist execution intent and outcomes; reconnects reconcile by the original execution ID without resubmission. Missing guest history after reset stays unknown. | [Phase 02.3 report](reports/phase-02-03.md) |
+| 00 | OpenCode CLI adapter, explicit model selection, structured results, timeouts, output limits, and deny-all tools | Verified with real inference |
+| 01 | Tart/Softnet Ubuntu worker, protected startup, host isolation, DNS relay, reset, and emergency stop | Verified for the current deployment profile |
+| 02 | Typed worker operations, pinned-key SSH, execution IDs, bounded process handling, and host-owned recovery records | Verified with deterministic and live-worker checks |
+| 03 | Owner-only Telegram polling, worker/task status, task history, and cancellation controls | Live owner workflow verified; a second-account rejection test was not available |
+| 04 | Durable queued tasks, task details, instructions, pause/resume, and restart persistence | Live owner workflow verified |
+| 05.1 | Explicit `/run` approval, real OpenCode execution in Ubuntu, result delivery, restart recovery, duplicate-run protection, and bounded cancellation | Verified with the selected model and live Telegram bot |
 
-Phases 03 and later are not implemented. See the [feature and task map](docs/features.md) for the full phase list and [status](docs/status.md) for current deployment state.
+See [the feature map](docs/features.md), [current status](docs/status.md), and [phase reports](reports/) for evidence and remaining work.
 
-## Security boundary and current limits
+## Telegram commands
 
-- Start the VM only through `ops/worker/start.sh`. Direct Tart launches bypass the repository's protected policy setup and are unprotected.
-- The VM execution helper is installed with `ops/worker/install-execution-agent.sh` after protected startup. Repeat this provisioning step after every worker reset.
-- The current network profile is verified; this does not prove isolation for future network or IPv6 configurations.
-- DNS queries pass through a restricted relay, but DNS names can still carry data. General public egress can also reach public DoH/DoT services.
-- Worker operations are not OpenCode tools. No unattended or general autonomous command execution is enabled.
+Configure the bot and owner ID outside this repository as described in [Telegram setup](docs/telegram-setup.md). Start one controller process for the bot:
 
-## Reproduce the development checks
+```bash
+uv run --no-sync python -m nanobot.personal_agent.telegram_controller
+```
 
-The VM deployment is specific to the reviewed Mac, Tart/Softnet versions, dedicated SSD, and operator-managed SSH key. Review [the worker guide](docs/worker-vm.md) before preparing another host; do not treat these commands as a generic one-click installer.
+Common commands:
 
-Install the locked Python development dependencies from the repository root:
+| Command | Action |
+|---|---|
+| `/ping` | Check that the controller is polling |
+| `/worker` | Read the current worker state without starting or changing the VM |
+| `/status` | Show controller, worker, and enabled capability status |
+| `/new <request>` | Add a task to the queue; it does not start work |
+| Natural-language text | Create a queued task; it does not start work |
+| `/tasks` | List recent tasks |
+| `/task <task_id>` | Show task state, execution ID, errors, and saved result |
+| `/run <task_id>` | Explicitly approve and start one queued task |
+| `/cancel <task_id>` | Request cancellation of that task's guest execution |
+| `/pause <task_id>` / `/resume <task_id>` | Change an eligible queued task's state |
+| `/update <task_id> <instructions>` | Add instructions before execution |
+| `/help` | List available commands |
+
+A task remains queued until the owner sends `/run`. Toothless does not automatically run previously queued tasks or start a stopped VM in response to status, task-list, or cancellation requests.
+
+## Run the current worker
+
+The VM and Softnet configuration are specific to the reviewed Apple silicon Mac, dedicated external SSD, installed Tart/Softnet versions, and operator-managed SSH key. Read [the worker operator guide](docs/worker-vm.md) before provisioning another host. Do not launch Tart directly for a protected run.
+
+On the configured host, use the protected launcher:
+
+```bash
+ops/worker/start.sh
+```
+
+After a worker reset, reinstall the fixed guest execution helper and OpenCode runtime while the worker is running under that launcher:
+
+```bash
+ops/worker/install-execution-agent.sh
+ops/worker/install-opencode.sh
+```
+
+If OpenCode guest authentication is not configured, use the interactive helper from a local Terminal:
+
+```bash
+ops/worker/opencode-auth-login.sh
+```
+
+The credential is entered and stored inside the Ubuntu guest. Do not copy the Mac's OpenCode auth directory, put credentials in the repository, or send them in Telegram or chat. Guest root can access guest-local provider credentials.
+
+## Security boundaries and known limits
+
+- The worker starts through `ops/worker/start.sh`; direct Tart launches bypass the repository's Softnet policy setup and are unprotected.
+- OpenCode uses the fixed model `opencode-go/glm-5.3`. The task runner rejects other models and has no automatic provider or paid-model fallback.
+- OpenCode tools, plugins, and MCP are disabled. Telegram text is never executed on the Mac, and the worker interface is not registered as an OpenCode tool.
+- SSH host-key verification is strict. The Mac's SSH agent, home directory, Docker socket, clipboard, and host filesystem are not mounted or forwarded to Ubuntu.
+- Phase 01 isolation applies to the tested current deployment profile; future network changes and IPv6-enabled routes need separate verification.
+- DNS is routed through a validated relay and rate-limited, but DNS names can carry data. Public encrypted DNS services and other public IPv4 destinations remain reachable.
+- Guest-local provider credentials are accessible to guest root. OpenCode Go billing entitlements were not audited.
+- Unattended scheduling, arbitrary model tools, browser research, connectors, and general autonomous command execution are not enabled. The recent cancellation flow produced duplicate confirmation messages once; the fix is covered by a local regression test but has not been repeated live.
+
+## Development checks
+
+Install the locked development dependencies:
 
 ```bash
 uv sync --locked --extra dev
 ```
 
-Run the deterministic worker, DNS relay, and VM contract checks:
+Run the Toothless controller, worker, and security tests:
 
 ```bash
-uv run --no-sync pytest -q \
-  tests/personal_agent/test_worker_interface.py \
-  tests/personal_agent/test_worker_execution_store.py \
-  tests/personal_agent/test_worker_dns_forwarder.py \
-  tests/personal_agent/test_worker_vm_contract.py
+uv run --no-sync pytest tests/personal_agent
 ```
 
-Run the static worker safety checks and import-boundary check:
+Run lint, type, import-boundary, and worker static checks:
 
 ```bash
-ops/worker/test-static.sh
+uv run --no-sync ruff check nanobot/personal_agent nanobot/worker/ssh_backend.py nanobot/worker/execution_store.py ops/worker/opencode_task_runner.py tests/personal_agent
+uv run --no-sync basedpyright nanobot/personal_agent nanobot/worker/ssh_backend.py nanobot/worker/execution_store.py ops/worker/opencode_task_runner.py
 uv run --no-sync python -m scripts.check_import_boundaries
+ops/worker/test-static.sh
 ```
 
-The live SSH tests require an already hardened worker, a verified pinned host key, and operator-provided SSH identity paths. Their exact setup, environment variables, test selection, and observed results are documented in [the Phase 02.3 report](reports/phase-02-03.md). Live networking tests require the reviewed deployment and owned fixtures; do not substitute unowned endpoints or real cloud metadata services.
+Deterministic tests do not replace live verification of Telegram, the provider, SSH identity, or the VM network boundary. Live test prerequisites and results are recorded in the relevant [phase reports](reports/).
 
-## Project map
+## Project documentation
 
-- [`INSTRUCTIONS.md`](INSTRUCTIONS.md): authoritative product plan and phase gates.
-- [`docs/architecture.md`](docs/architecture.md): controller, model, worker, and persistence boundaries.
-- [`docs/features.md`](docs/features.md): implemented features and remaining work.
-- [`docs/status.md`](docs/status.md): current verification and deployment status.
-- [`docs/worker-vm.md`](docs/worker-vm.md): installation, protected startup, recovery, reset, and isolation guidance.
-- [`reports/`](reports/): phase-specific implementation and verification evidence.
+- [Architecture](docs/architecture.md)
+- [Feature map and future phases](docs/features.md)
+- [Current verification and deployment status](docs/status.md)
+- [Telegram setup and operations](docs/telegram-setup.md)
+- [Worker VM operator guide](docs/worker-vm.md)
+- [Authoritative implementation plan](INSTRUCTIONS.md)
+- [Phase reports](reports/)
 
 ## Nanobot credit
 
-Toothless builds on the open-source [Nanobot](https://github.com/HKUDS/nanobot) project by HKUDS and its contributors. We retain the applicable upstream license and notices in this repository. The Toothless-specific worker isolation, OpenCode boundary, SSH execution interface, and recovery work are documented here and in the linked reports.
+Toothless builds on the open-source [Nanobot](https://github.com/HKUDS/nanobot) project by HKUDS and its contributors. It reuses selected Python gateway and Telegram foundations; Nanobot's other features are not automatically Toothless capabilities. See [the reuse decision](docs/decisions/0001-adopt-nanobot-v0.4.1.md), [upstream map](docs/upstream-map.md), [LICENSE](LICENSE), and [third-party notices](THIRD_PARTY_NOTICES.md).

@@ -261,6 +261,16 @@ class SqliteExecutionStore:
             ).fetchone()
         return _record(row) if row is not None else None
 
+    def list_latest(self, limit: int = 10) -> tuple[ExecutionRecord, ...]:
+        if isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("execution record limit must be between 1 and 100")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM worker_executions ORDER BY created_at DESC, execution_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple(_record(row) for row in rows)
+
 
 def _record(row: sqlite3.Row) -> ExecutionRecord:
     return ExecutionRecord(

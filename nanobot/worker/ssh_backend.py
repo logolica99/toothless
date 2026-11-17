@@ -241,6 +241,9 @@ class SSHWorkerBackend:
             return_code = await asyncio.wait_for(
                 process.wait(), timeout=_remaining(deadline)
             )
+        except asyncio.CancelledError:
+            await _stop_ssh(process, stderr_task)
+            raise
         except (BrokenPipeError, ConnectionError, OSError, asyncio.TimeoutError, ValueError) as exc:
             failure_stderr = _completed_task_result(stderr_task)
             await _stop_ssh(process, stderr_task)
@@ -478,10 +481,16 @@ def create_persistent_worker(
     config: SSHWorkerConfig,
     *,
     execution_store: SqliteExecutionStore | None = None,
+    accepted_callback: Callable[[str], None] | None = None,
 ) -> WorkerInterface:
     """Compose SSH with the host-owned default execution record store."""
     from nanobot.worker.execution_store import SqliteExecutionStore
 
     store = execution_store if execution_store is not None else SqliteExecutionStore.default()
-    backend = SSHWorkerBackend(config, accepted_callback=store.mark_accepted)
+    def persist_acceptance(execution_id: str) -> None:
+        store.mark_accepted(execution_id)
+        if accepted_callback is not None:
+            accepted_callback(execution_id)
+
+    backend = SSHWorkerBackend(config, accepted_callback=persist_acceptance)
     return WorkerInterface(backend, execution_store=store)

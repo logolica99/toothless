@@ -144,3 +144,19 @@ async def test_reconcile_retries_recorded_cancellation_not_the_command(
 
     assert result.status is ExecutionStatus.CANCELLED
     assert len(backend.submitted_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_latest_is_bounded_and_returns_newest_first(tmp_path: Path) -> None:
+    store = SqliteExecutionStore(tmp_path / "worker-executions.sqlite3")
+    backend = FakeWorkerBackend()
+    worker = WorkerInterface(backend, execution_store=store)
+
+    for index in range(12):
+        await worker.execute(ExecuteRequest(f"command-{index}", execution_id=f"list-{index}"))
+    records = store.list_latest(10)
+    assert len(records) == 10
+    assert records[0].execution_id == "list-11"
+    assert records[-1].execution_id == "list-2"
+    with pytest.raises(ValueError, match="between 1 and 100"):
+        store.list_latest(0)
