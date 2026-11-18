@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, cast
 
 WORKSPACE_ROOT = Path("/home/admin/workspace")
+OPENCODE_WORKSPACE_ROOT = Path("/home/toothless-agent/workspace")
+OPENCODE_WORKSPACE_ALIAS = "opencode-task-workspace"
 STATE_ROOT = Path("/home/admin/.local/state/toothless-worker/executions")
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_BYTES = 32 * 1024
@@ -75,12 +77,41 @@ def _workspace_path(value: object, *, allow_dot: bool = False) -> Path:
         raise AgentError("invalid_request", "absolute paths and parent traversal are not allowed")
     if value == "." and not allow_dot:
         raise AgentError("invalid_request", "a file path is required")
-    root = WORKSPACE_ROOT.resolve(strict=True)
-    target = root if value == "." else root.joinpath(*parts)
+    if value == OPENCODE_WORKSPACE_ALIAS or value.startswith(f"{OPENCODE_WORKSPACE_ALIAS}/"):
+        root = OPENCODE_WORKSPACE_ROOT.resolve(strict=True)
+        relative_parts = parts[1:]
+    else:
+        root = WORKSPACE_ROOT.resolve(strict=True)
+        relative_parts = parts
+    target = root if value == "." or not relative_parts else root.joinpath(*relative_parts)
     resolved = target.resolve(strict=False)
     if not resolved.is_relative_to(root):
         raise AgentError("invalid_request", "path resolves outside the worker workspace")
     return resolved
+
+
+def _inside_workspaces(path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    for root in (WORKSPACE_ROOT, OPENCODE_WORKSPACE_ROOT):
+        try:
+            if resolved.is_relative_to(root.resolve(strict=True)):
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def _workspace_relative(path: Path) -> str:
+    resolved = path.resolve(strict=True)
+    try:
+        opencode_root = OPENCODE_WORKSPACE_ROOT.resolve(strict=True)
+        if resolved.is_relative_to(opencode_root):
+            suffix = resolved.relative_to(opencode_root).as_posix()
+            return OPENCODE_WORKSPACE_ALIAS if suffix == "." else f"{OPENCODE_WORKSPACE_ALIAS}/{suffix}"
+    except FileNotFoundError:
+        pass
+    workspace_root = WORKSPACE_ROOT.resolve(strict=True)
+    return "." if resolved == workspace_root else resolved.relative_to(workspace_root).as_posix()
 
 
 def _snapshot(state: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +263,7 @@ def _write_file(request: dict[str, Any]) -> dict[str, Any]:
         raise AgentError("is_a_directory", "Path is a directory")
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(WORKSPACE_ROOT.resolve(strict=True)):
+    if not _inside_workspaces(resolved):
         raise AgentError("invalid_request", "path resolves outside the worker workspace")
     descriptor, temporary = tempfile.mkstemp(prefix=".toothless-", dir=path.parent)
     try:
@@ -256,14 +287,14 @@ def _list_files(path_value: object) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for child in sorted(path.iterdir(), key=lambda item: item.name):
         resolved = child.resolve(strict=False)
-        if not resolved.is_relative_to(WORKSPACE_ROOT.resolve(strict=True)):
+        if not _inside_workspaces(resolved):
             raise AgentError("invalid_request", "A listed entry resolves outside the workspace")
         info = child.stat()
         kind = "directory" if child.is_dir() else "file"
         entries.append(
             {
                 "name": child.name,
-                "path": child.relative_to(WORKSPACE_ROOT).as_posix(),
+                "path": _workspace_relative(child),
                 "kind": kind,
                 "size_bytes": 0 if kind == "directory" else info.st_size,
             }
@@ -282,7 +313,7 @@ def _stat_path(path: Path) -> dict[str, Any]:
     else:
         raise AgentError("invalid_request", "Only regular files and directories are supported")
     return {
-        "path": "." if path == WORKSPACE_ROOT else path.relative_to(WORKSPACE_ROOT).as_posix(),
+        "path": _workspace_relative(path),
         "kind": kind,
         "size_bytes": size,
     }

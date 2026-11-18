@@ -212,15 +212,18 @@ async def test_task_commands_create_update_pause_resume_cancel_and_deduplicate(t
 
     await app._handle(_update(50, text="/new Research current open-source coding agents"))
     first_reply = sent[-1]["text"]
-    task_id = first_reply.split()[1]
+    task_id = app.task_store.list_latest()[0].task_id
     assert task_id.startswith("task-")
-    assert "queued" in first_reply and "/run " in first_reply
+    assert first_reply == (
+        f"Task <code>{task_id}</code> is queued.\n\n"
+        f"To start it, send:\n<code>/run {task_id}</code>"
+    )
     await app._handle(_update(50, text="/new duplicate payload"))
     assert len(sent) == 1
     assert len(app.task_store.list_latest()) == 1
 
     await app._handle(_update(51, text="Compare two public project licenses"))
-    second_id = sent[-1]["text"].split()[1]
+    second_id = app.task_store.list_latest()[0].task_id
     assert second_id != task_id
     assert "queued" in sent[-1]["text"]
     assert len(backend.submitted_requests) == 0

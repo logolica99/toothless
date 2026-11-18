@@ -8,9 +8,9 @@
 
 ## What Toothless does
 
-Toothless lets its owner create and manage tasks from a private Telegram chat. When the owner explicitly approves a task with `/run`, the Mac controller sends it to OpenCode running inside an isolated Ubuntu virtual machine. OpenCode returns an answer; the controller stores it on the Mac and delivers it to Telegram.
+Toothless lets its owner create and manage tasks from a private Telegram chat. A task stays queued until the owner explicitly approves it with `/run`. The trusted Mac controller dispatches approved work to OpenCode inside the isolated Ubuntu worker, stores results on the Mac, and returns them to Telegram.
 
-Toothless is designed to keep AI execution out of the Mac host. The controller owns identity checks, approvals, task records, execution records, and VM lifecycle controls. The Ubuntu worker runs the selected model. Model tools are disabled, so OpenCode cannot use shell, file-editing, browser, or MCP tools at this checkpoint.
+AI task execution stays in Ubuntu rather than on the Mac host. Depending on the approved task profile, OpenCode can use bounded tools in its guest workspace or a separate browser-only profile. The controller owns Telegram authorization, task approvals, host-side records, and worker lifecycle controls; it never turns Telegram text into a Mac shell command.
 
 ## Architecture
 
@@ -20,8 +20,8 @@ flowchart LR
     Controller["Mac controller<br/>owner checks · task approvals<br/>Telegram dedupe · SQLite records"]
     SSH["Pinned-key SSH<br/>no agent forwarding"]
     Worker["Ubuntu 24.04 ARM64 worker<br/>Tart + Softnet"]
-    Runner["Fixed Toothless runner<br/>bounded request and output"]
-    OpenCode["OpenCode CLI 2.3.0<br/>opencode-go/glm-5.3<br/>model tools denied"]
+    Runner["Fixed Toothless runner<br/>bounded per-task profile and output"]
+    OpenCode["OpenCode CLI 2.3.0<br/>opencode-go/glm-5.3<br/>workspace tools or browser-only MCP"]
     Records[("Host-owned task<br/>and execution databases")]
     DNS["Host DNS relay<br/>TCP/UDP 55353 only"]
     Internet["Public network<br/>model and HTTPS access"]
@@ -37,6 +37,8 @@ flowchart LR
     Worker -->|"public egress"| Internet
 ```
 
+OpenCode runs as the non-sudo `toothless-agent` account. The workspace profile allows bounded file and shell tools inside the guest workspace. Browser-classified tasks use a separate no-shell/no-filesystem profile with reviewed Playwright browser tools; a host-enforced guest network policy blocks private and metadata destinations for the browser process tree.
+
 The controller runs on the Mac and accepts messages only from the configured numeric owner ID in a private Telegram chat. It uses outbound Telegram polling; it does not expose a public webhook or inbound service. The host stores task state and execution history in separate owner-private SQLite databases.
 
 Tart runs Ubuntu through Softnet. The protected launcher applies and verifies a directional block on new guest connections to the Mac, with DNS restricted to the validated host relay. Public IPv4 access remains available for OpenCode inference and HTTPS. SSH is initiated from the Mac using a pinned guest host key and a dedicated Ed25519 identity.
@@ -51,6 +53,8 @@ Tart runs Ubuntu through Softnet. The protected launcher applies and verifies a 
 | 03 | Owner-only Telegram polling, worker/task status, task history, and cancellation controls | Live owner workflow verified; a second-account rejection test was not available |
 | 04 | Durable queued tasks, task details, instructions, pause/resume, and restart persistence | Live owner workflow verified |
 | 05.1 | Explicit `/run` approval, real OpenCode execution in Ubuntu, result delivery, restart recovery, duplicate-run protection, and bounded cancellation | Verified with the selected model and live Telegram bot |
+| 05.2 | Rootless guest workspace file and shell tools after `/run` | Verified for bounded workspace operations; apt/dpkg and guest root remain unavailable to the model |
+| 05.3 | Guest-only Playwright browser with a browser-specific OpenCode profile | Verified for current deployment profile with live Example Domain and official Python research tasks, restart recovery, duplicate-run protection, and worker cancellation. Cancellation was confirmed before the first browser tool call; in-flight Chromium navigation cancellation remains unverified. |
 
 See [the feature map](docs/features.md), [current status](docs/status.md), and [phase reports](reports/) for evidence and remaining work.
 
@@ -110,12 +114,13 @@ The credential is entered and stored inside the Ubuntu guest. Do not copy the Ma
 
 - The worker starts through `ops/worker/start.sh`; direct Tart launches bypass the repository's Softnet policy setup and are unprotected.
 - OpenCode uses the fixed model `opencode-go/glm-5.3`. The task runner rejects other models and has no automatic provider or paid-model fallback.
-- OpenCode tools, plugins, and MCP are disabled. Telegram text is never executed on the Mac, and the worker interface is not registered as an OpenCode tool.
+- OpenCode receives tools only through an owner-approved `/run` in Ubuntu. Workspace tools run as the non-sudo guest account and are scoped to its workspace; browser tasks use a browser-only tool profile. Plugins, subagents, guest root, apt/dpkg, and host-side model tools remain disabled.
 - SSH host-key verification is strict. The Mac's SSH agent, home directory, Docker socket, clipboard, and host filesystem are not mounted or forwarded to Ubuntu.
 - Phase 01 isolation applies to the tested current deployment profile; future network changes and IPv6-enabled routes need separate verification.
 - DNS is routed through a validated relay and rate-limited, but DNS names can carry data. Public encrypted DNS services and other public IPv4 destinations remain reachable.
 - Guest-local provider credentials are accessible to guest root. OpenCode Go billing entitlements were not audited.
-- Unattended scheduling, arbitrary model tools, browser research, connectors, and general autonomous command execution are not enabled. The recent cancellation flow produced duplicate confirmation messages once; the fix is covered by a local regression test but has not been repeated live.
+- Unattended scheduling, unrestricted model tools, account logins, publishing, purchases, and general autonomous command execution are not enabled. The browser profile limits requests to public HTTP(S) GET/HEAD navigation and bounded downloads; GET requests can still have server-side effects. It does not provide general egress isolation, and public egress/DNS exfiltration remain possible.
+- Browser cancellation reached the worker and removed its scopes and processes, but that run was cancelled before the first browser tool call. Cancellation during active Chromium navigation remains unverified.
 
 ## Development checks
 

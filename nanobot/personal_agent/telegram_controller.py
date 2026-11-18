@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import html
 import ipaddress
 import logging
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -188,6 +190,48 @@ def _clean_text(value: str, *, limit: int) -> str:
     if len(cleaned) > limit:
         return cleaned[:limit] + "… [truncated]"
     return cleaned
+
+
+def _telegram_html(value: str, *, limit: int) -> str:
+    """Render common Markdown as safely escaped Telegram HTML."""
+    text = _clean_text(value, limit=limit)
+    text = re.sub(r"\\([^\w\s])", r"\1", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+(.+)$", r"**\1**", text)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "• ", text)
+    text = re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", r"\1 (\2)", text)
+
+    def format_text(segment: str) -> str:
+        rendered = html.escape(segment, quote=False)
+        rendered = re.sub(
+            r"\btask-[0-9a-f]{32}\b",
+            lambda match: f"<code>{match.group(0)}</code>",
+            rendered,
+        )
+        rendered = re.sub(
+            r"\*\*(.+?)\*\*|__(.+?)__",
+            lambda match: f"<b>{match.group(1) or match.group(2)}</b>",
+            rendered,
+        )
+        rendered = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", rendered)
+        rendered = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<i>\1</i>", rendered)
+        rendered = re.sub(r"~~(.+?)~~", r"<s>\1</s>", rendered)
+        return rendered
+
+    parts = re.split(r"(```.*?```|`[^`\n]+`)", text, flags=re.DOTALL)
+    rendered_parts: list[str] = []
+    for part in parts:
+        if part.startswith("```") and part.endswith("```"):
+            code = part[3:-3]
+            _, separator, code = code.partition("\n")
+            if not separator:
+                code = part[3:-3]
+            rendered_parts.append(f"<pre>{html.escape(code, quote=False)}</pre>")
+        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+            rendered_parts.append(f"<code>{html.escape(part[1:-1], quote=False)}</code>")
+        else:
+            rendered_parts.append(format_text(part))
+    return "".join(rendered_parts)
 
 
 def _record_state(record: ExecutionRecord) -> str:
@@ -414,7 +458,8 @@ class TelegramController:
     async def _send_text(self, chat_id: int, text: str) -> None:
         await self._api("sendMessage", {
             "chat_id": chat_id,
-            "text": _clean_text(text, limit=MAX_TELEGRAM_MESSAGE_CHARS),
+            "text": _telegram_html(text, limit=MAX_TELEGRAM_MESSAGE_CHARS),
+            "parse_mode": "HTML",
         })
 
     def _tasks_reply(self) -> str:
@@ -479,7 +524,8 @@ class TelegramController:
             return f"Could not create task: {_clean_text(str(exc), limit=240)}"
         if created:
             return (
-                f"Task {task.task_id} is queued. It will not start until you explicitly approve it with /run {task.task_id}."
+                f"Task {task.task_id} is queued.\n\n"
+                f"To start it, send:\n`/run {task.task_id}`"
             )
         return f"Task {task.task_id} was already recorded as {task.status.value}; it was not duplicated."
 

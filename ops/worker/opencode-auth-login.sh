@@ -31,5 +31,5 @@ ssh_options=(
 )
 printf 'OpenCode will prompt inside the Ubuntu guest. Enter the OpenCode Go credential only in this interactive terminal; it is not sent to Toothless logs or copied from the Mac.\n'
 ssh "${ssh_options[@]}" "admin@$worker_ip" \
-  'env HOME=/home/admin XDG_CONFIG_HOME=/home/admin/.toothless-opencode-config XDG_DATA_HOME=/home/admin/.toothless-opencode-data XDG_STATE_HOME=/home/admin/.toothless-opencode-state XDG_CACHE_HOME=/home/admin/.toothless-opencode-cache OPENCODE_CONFIG=/etc/toothless/opencode.json /usr/local/bin/opencode auth login'
-printf 'OpenCode authentication command completed. Credentials remain guest-local under /home/admin/.toothless-opencode-data/opencode.\n'
+  "sudo -n -u toothless-agent -- env HOME=/home/toothless-agent XDG_CONFIG_HOME=/home/toothless-agent/.config XDG_DATA_HOME=/home/toothless-agent/.local/share XDG_STATE_HOME=/home/toothless-agent/.local/state XDG_CACHE_HOME=/home/toothless-agent/.cache OPENCODE_CONFIG=/etc/toothless/opencode.json /bin/sh -c 'cd /home/toothless-agent/workspace && exec /usr/local/bin/opencode auth login opencode-go --method key'"
+printf 'OpenCode authentication command completed. Credentials remain guest-local under /home/toothless-agent/.local/share/opencode. The OpenCode shell tools can access that guest credential because they run as the same guest identity.\n'

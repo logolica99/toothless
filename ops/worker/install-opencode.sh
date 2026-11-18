@@ -32,9 +32,12 @@ ssh_options=(
 )
 trap 'rm -f "$known_hosts"; ssh "${ssh_options[@]}" "admin@$worker_ip" "sudo -n rm -rf -- $remote_dir" >/dev/null 2>&1 || true' EXIT
 ssh "${ssh_options[@]}" "admin@$worker_ip" "mkdir -m 0700 -- '$remote_dir'"
-for file in guest_install_opencode.sh opencode_task_runner.py; do
+for file in guest_install_opencode.sh opencode_task_runner.py browser_mcp.py browser_mcp_bridge.py; do
   ssh "${ssh_options[@]}" "admin@$worker_ip" "tee '$remote_dir/$file' >/dev/null" < "$script_dir/$file"
 done
 ssh "${ssh_options[@]}" "admin@$worker_ip" "tee '$remote_dir/opencode.json' >/dev/null" < "$script_dir/../opencode/phase05/opencode.json"
+ssh "${ssh_options[@]}" "admin@$worker_ip" "tee '$remote_dir/browser.json' >/dev/null" < "$script_dir/../opencode/phase05/browser.json"
+ssh "${ssh_options[@]}" "admin@$worker_ip" "tee '$remote_dir/browser-network-policy.json' >/dev/null" < "$script_dir/../opencode/phase05/browser-network-policy.json"
+ssh "${ssh_options[@]}" "admin@$worker_ip" "tee '$remote_dir/browser-control-network-policy.json' >/dev/null" < "$script_dir/../opencode/phase05/browser-control-network-policy.json"
 ssh "${ssh_options[@]}" "admin@$worker_ip" "sudo -n bash '$remote_dir/guest_install_opencode.sh' '$remote_dir'"
-printf 'OpenCode CLI and the fixed deny-all task runner are installed in Ubuntu. This installer does not read, copy, or change authentication.\n'
+printf 'OpenCode CLI, rootless workspace profile, and browser-only profile are installed in Ubuntu. This installer does not read, copy, or change authentication.\n'

@@ -5,7 +5,6 @@ trap 'status=$?; printf "OpenCode guest install failed at line %s.\n" "$LINENO" 
 
 version='2.3.0'
 asset='opencode-linux-arm64.tar.gz'
-config_sha256='85f4457e7ed330262e3797bceef759b68938042dc757977f764365fa5aa20eff'
 binary_sha256='5c7d89bc2d5fa5d83cc7768b813ca671368e70b8b9eda9d1ca9e6ec6b66d8ce0'
 release="https://github.com/anomalyco/opencode/releases/download/v${version}"
 source_dir="${1:?staged source directory is required}"
@@ -48,12 +47,46 @@ else
 fi
 
 install -d -o root -g root -m 0755 /etc/toothless
-install -d -o root -g root -m 0555 /home/admin/opencode-task-workspace
-install -d -o admin -g admin -m 0700 /home/admin/.toothless-opencode-config /home/admin/.toothless-opencode-data /home/admin/.toothless-opencode-state /home/admin/.toothless-opencode-cache
+if ! getent group toothless-agent >/dev/null; then
+  groupadd --system toothless-agent
+fi
+if ! id toothless-agent >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /home/toothless-agent --shell /bin/bash --gid toothless-agent toothless-agent
+fi
+[[ "$(getent passwd toothless-agent | cut -d: -f6)" == '/home/toothless-agent' ]]
+[[ "$(id -gn toothless-agent)" == 'toothless-agent' ]]
+getent group admin >/dev/null || {
+  printf 'The existing worker admin group is unavailable; refusing the shared artifact path.\n' >&2
+  exit 1
+}
+if id -nG toothless-agent | tr ' ' '\n' | grep -Eq '^(sudo|adm|docker|admin|root)$'; then
+  printf 'The OpenCode account belongs to a privileged or management group; refusing installation.\n' >&2
+  exit 1
+fi
+install -d -o toothless-agent -g admin -m 0710 /home/toothless-agent
+install -d -o toothless-agent -g toothless-agent -m 0700 \
+  /home/toothless-agent/.config \
+  /home/toothless-agent/.local/share /home/toothless-agent/.local/state \
+  /home/toothless-agent/.cache
+install -d -o toothless-agent -g admin -m 2770 /home/toothless-agent/workspace
+if runuser -u toothless-agent -- test -r /home/admin/.toothless-opencode-data/opencode; then
+  printf 'The OpenCode account can read the prior admin credential store; refusing installation.\n' >&2
+  exit 1
+fi
 install -o root -g root -m 0755 "$source_dir/opencode_task_runner.py" /usr/local/libexec/toothless/opencode-task-runner
 install -o root -g root -m 0644 "$source_dir/opencode.json" /etc/toothless/opencode.json
+install -o root -g root -m 0755 "$source_dir/browser_mcp.py" /usr/local/libexec/toothless/browser_mcp.py
+install -o root -g root -m 0755 "$source_dir/browser_mcp_bridge.py" /usr/local/libexec/toothless/browser_mcp_bridge.py
+install -o root -g root -m 0644 "$source_dir/browser.json" /etc/toothless/browser.json
+install -o root -g root -m 0644 "$source_dir/browser-network-policy.json" /etc/toothless/browser-network-policy.json
+install -o root -g root -m 0644 "$source_dir/browser-control-network-policy.json" /etc/toothless/browser-control-network-policy.json
+config_sha256="$(sha256sum "$source_dir/opencode.json" | awk '{print $1}')"
 [[ "$(sha256sum /etc/toothless/opencode.json | awk '{print $1}')" == "$config_sha256" ]]
 [[ "$(sha256sum /usr/local/bin/opencode | awk '{print $1}')" == "$binary_sha256" ]]
-runuser -u admin -- env HOME=/home/admin XDG_CONFIG_HOME=/home/admin/.toothless-opencode-config XDG_DATA_HOME=/home/admin/.toothless-opencode-data XDG_STATE_HOME=/home/admin/.toothless-opencode-state XDG_CACHE_HOME=/home/admin/.toothless-opencode-cache OPENCODE_CONFIG=/etc/toothless/opencode.json /usr/bin/python3 /usr/local/libexec/toothless/opencode-task-runner --verify-config
+runuser -u toothless-agent -- env HOME=/home/toothless-agent XDG_CONFIG_HOME=/home/toothless-agent/.config XDG_DATA_HOME=/home/toothless-agent/.local/share XDG_STATE_HOME=/home/toothless-agent/.local/state XDG_CACHE_HOME=/home/toothless-agent/.cache OPENCODE_CONFIG=/etc/toothless/opencode.json /usr/local/bin/opencode service set port 49375
+/usr/bin/python3 /usr/local/libexec/toothless/opencode-task-runner --verify-config
+/usr/bin/python3 /usr/local/libexec/toothless/opencode-task-runner --verify-browser-config
+[[ -x /home/toothless-agent/.local/share/toothless/browser-smoke/venv/bin/python ]]
+[[ -x /home/toothless-agent/.local/share/toothless/browser-smoke/chromium/chrome-headless-shell-linux-arm64/chrome-headless-shell ]]
 printf 'OpenCode CLI binary SHA-256: %s\n' "$(sha256sum /usr/local/bin/opencode | awk '{print $1}')"
-printf 'OpenCode CLI %s installed; task runner and deny-all config verified.\n' "$version"
+printf 'OpenCode CLI %s installed; browser-only config, Playwright, and Chromium paths verified.\n' "$version"

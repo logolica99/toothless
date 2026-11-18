@@ -2,23 +2,62 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "opencode-go/glm-5.3",
   "update": "disable",
-  "permission": {
-    "*": "deny"
-  },
-  "tools": {
-    "*": false
-  },
+  "permissions": [
+    {"action": "*", "resource": "*", "effect": "deny"},
+    {"action": "external_directory", "resource": "*", "effect": "deny"},
+    {"action": "read", "resource": "*", "effect": "allow"},
+    {"action": "edit", "resource": "*", "effect": "allow"},
+    {"action": "glob", "resource": "*", "effect": "allow"},
+    {"action": "grep", "resource": "*", "effect": "allow"},
+    {"action": "shell", "resource": "*", "effect": "allow"},
+    {"action": "shell", "resource": "sudo *", "effect": "deny"},
+    {"action": "shell", "resource": "su *", "effect": "deny"},
+    {"action": "shell", "resource": "doas *", "effect": "deny"},
+    {"action": "shell", "resource": "apt *", "effect": "deny"},
+    {"action": "shell", "resource": "apt-get *", "effect": "deny"},
+    {"action": "shell", "resource": "dpkg *", "effect": "deny"},
+    {"action": "shell", "resource": "systemctl *", "effect": "deny"},
+    {"action": "shell", "resource": "reboot *", "effect": "deny"},
+    {"action": "shell", "resource": "shutdown *", "effect": "deny"},
+    {"action": "shell", "resource": "mount *", "effect": "deny"},
+    {"action": "shell", "resource": "umount *", "effect": "deny"}
+  ],
+  "policies": [
+    {"action": "provider.use", "resource": "*", "effect": "deny"},
+    {"action": "provider.use", "resource": "opencode-go", "effect": "allow"},
+    {"action": "mcp.use", "resource": "*", "effect": "deny"},
+    {"action": "plugin.use", "resource": "*", "effect": "deny"},
+    {"action": "skill.use", "resource": "*", "effect": "deny"},
+    {"action": "tool.use", "resource": "subagent:*", "effect": "deny"}
+  ],
   "plugin": [],
   "mcp": {},
-  "agent": {
-    "toothless-readonly": {
-      "description": "Toothless bounded answer agent; all model tools remain denied",
+  "agents": {
+    "toothless-worker": {
+      "description": "Owner-approved, bounded guest-workspace task runner",
       "mode": "primary",
       "model": "opencode-go/glm-5.3",
-      "steps": 5,
-      "permission": {
-        "*": "deny"
-      }
+      "steps": 12,
+      "permissions": [
+        {"action": "*", "resource": "*", "effect": "deny"},
+        {"action": "external_directory", "resource": "*", "effect": "deny"},
+        {"action": "read", "resource": "*", "effect": "allow"},
+        {"action": "edit", "resource": "*", "effect": "allow"},
+        {"action": "glob", "resource": "*", "effect": "allow"},
+        {"action": "grep", "resource": "*", "effect": "allow"},
+        {"action": "shell", "resource": "*", "effect": "allow"},
+        {"action": "shell", "resource": "sudo *", "effect": "deny"},
+        {"action": "shell", "resource": "su *", "effect": "deny"},
+        {"action": "shell", "resource": "doas *", "effect": "deny"},
+        {"action": "shell", "resource": "apt *", "effect": "deny"},
+        {"action": "shell", "resource": "apt-get *", "effect": "deny"},
+        {"action": "shell", "resource": "dpkg *", "effect": "deny"},
+        {"action": "shell", "resource": "systemctl *", "effect": "deny"},
+        {"action": "shell", "resource": "reboot *", "effect": "deny"},
+        {"action": "shell", "resource": "shutdown *", "effect": "deny"},
+        {"action": "shell", "resource": "mount *", "effect": "deny"},
+        {"action": "shell", "resource": "umount *", "effect": "deny"}
+      ]
     }
   }
 }
