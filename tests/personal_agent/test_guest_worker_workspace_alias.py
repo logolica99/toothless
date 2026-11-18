@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import stat
 from pathlib import Path
 
 import pytest
@@ -42,3 +44,22 @@ def test_opencode_workspace_alias_rejects_traversal_and_external_symlink(
         guest._workspace_path("opencode-task-workspace/../general", allow_dot=True)
     with pytest.raises(guest.AgentError, match="outside"):
         guest._workspace_path("opencode-task-workspace/escape")
+
+
+def test_worker_file_transfer_makes_opencode_workspace_file_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    general = tmp_path / "general"
+    opencode = tmp_path / "opencode"
+    general.mkdir()
+    opencode.mkdir()
+    monkeypatch.setattr(guest, "WORKSPACE_ROOT", general)
+    monkeypatch.setattr(guest, "OPENCODE_WORKSPACE_ROOT", opencode)
+    result = guest._write_file({
+        "path": "opencode-task-workspace/inputs/task-id/input.csv",
+        "content_base64": base64.b64encode(b"x\n1\n").decode("ascii"),
+    })
+
+    assert result["size_bytes"] == 4
+    assert (opencode / "inputs/task-id/input.csv").read_bytes() == b"x\n1\n"
+    assert stat.S_IMODE((opencode / "inputs/task-id/input.csv").stat().st_mode) == 0o644

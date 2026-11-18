@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ops.worker import opencode_task_runner
-from ops.worker.opencode_task_runner import _events, _tool_policy_is_safe
+from ops.worker.opencode_task_runner import _events, _task_timeout, _tool_policy_is_safe
 
 
 def test_guest_config_allows_only_bounded_tools_and_denies_elevation() -> None:
@@ -45,6 +45,20 @@ def test_guest_config_rejects_unapproved_tool_permission() -> None:
     unsafe = [*config["permissions"], {"action": "webfetch", "resource": "*", "effect": "allow"}]
 
     assert not _tool_policy_is_safe(unsafe)
+
+
+def test_file_task_gets_a_fixed_extended_deadline_only_when_host_marked() -> None:
+    assert _task_timeout({"profile": "worker"}, browser=False) == 120
+    assert _task_timeout(
+        {"profile": "worker", "file_task": True, "timeout_seconds": 300}, browser=False
+    ) == 300
+    assert _task_timeout({"profile": "browser"}, browser=True) == 300
+    with pytest.raises(ValueError, match="not authorized"):
+        _task_timeout({"profile": "worker", "timeout_seconds": 300}, browser=False)
+    with pytest.raises(ValueError, match="fixed"):
+        _task_timeout(
+            {"profile": "browser", "file_task": True, "timeout_seconds": 300}, browser=True
+        )
 
 
 def test_guest_event_parser_records_tool_names_without_arguments() -> None:

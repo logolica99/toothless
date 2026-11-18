@@ -34,6 +34,29 @@ def _update(update_id: int, *, user_id: int = 42, chat_id: int = 42, chat_type: 
     }
 
 
+def _task_id(reply: str) -> str:
+    import re
+
+    match = re.search(r"task-[0-9a-f]{32}", reply)
+    assert match is not None
+    return match.group(0)
+
+
+def _document_update(update_id: int, *, user_id: int = 42, chat_type: str = "private", content: bytes = b"value\n1\n") -> dict:
+    return {
+        "update_id": update_id,
+        "message": {
+            "from": {"id": user_id},
+            "chat": {"id": user_id, "type": chat_type},
+            "caption": "Calculate statistics from this CSV.",
+            "document": {
+                "file_id": f"file-{update_id}", "file_name": "numbers.csv",
+                "mime_type": "text/csv", "file_size": len(content),
+            },
+        },
+    }
+
+
 def _app(
     tmp_path: Path,
     *,
@@ -117,6 +140,188 @@ async def test_rate_limit_uses_bounded_retry_after(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_owner_upload_is_downloaded_once_and_persisted_for_a_queued_task(tmp_path: Path) -> None:
+    content = b"value\n1\n2\n3\n"
+    calls: list[str] = []
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/sendMessage"):
+            sent.append(json.loads(request.content))
+        if request.url.path.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True, "result": {"file_path": "docs/input.csv", "file_size": len(content)}})
+        if "/file/bot" in request.url.path:
+            return httpx.Response(200, content=content)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client,
+        execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+    )
+    await app._handle(_document_update(301, content=content))
+    task = app.task_store.get(app.task_store.list_latest()[0].task_id)
+    assert task is not None and task.status is TaskStatus.QUEUED
+    assert task.request == "Calculate statistics from this CSV."
+    assert len(task.attachments) == 1
+    assert task.attachments[0].telegram_file_id == "file-301"
+    assert task.attachments[0].filename == "numbers.csv"
+    assert app._attachment_storage.read(task.attachments[0].storage_key) == content
+    assert sum(path.endswith("/getFile") for path in calls) == 1
+    task_id = task.task_id
+    assert sent[0]["text"] == (
+        f"<b>File received.</b> Task <code>{task_id}</code> is queued.\n"
+        "Files: numbers.csv\n\nTo approve execution, send:\n"
+        f"<code>/run {task_id}</code>"
+    )
+    await app.close()
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client,
+        execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+    )
+    recovered = app.task_store.get(task_id)
+    assert recovered is not None and recovered.attachments[0].storage_key == task.attachments[0].storage_key
+    assert app._attachment_storage.read(recovered.attachments[0].storage_key) == content
+    await app._handle(_document_update(301, content=content))
+    assert sum(path.endswith("/getFile") for path in calls) == 1
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_declared_oversize_upload_is_rejected_before_get_file(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client, execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+    )
+    update = _document_update(303)
+    update["message"]["document"]["file_size"] = controller.MAX_UPLOAD_BYTES + 1
+    await app._handle(update)
+    assert not any(path.endswith("/getFile") for path in calls)
+    assert app.task_store.list_latest() == ()
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_telegram_file_download_does_not_create_a_task(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True, "result": {"file_path": "docs/input.csv", "file_size": 10}})
+        if "/file/bot" in request.url.path:
+            raise httpx.ReadError("interrupted stream", request=request)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client, execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+    )
+    await app._handle(_document_update(305, content=b"value\n1\n"))
+    assert app.task_store.list_latest() == ()
+    assert sum(path.endswith("/getFile") for path in calls) == 1
+    assert app.store.contains(305)
+    await app._handle(_document_update(305, content=b"value\n1\n"))
+    assert sum(path.endswith("/getFile") for path in calls) == 1
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_upload_is_rejected_before_file_download(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app, sent, _ = _app(tmp_path)
+    await app._client.aclose()
+    app._client = client
+    app._owns_client = False
+    await app._handle(_document_update(302, user_id=7))
+    assert calls == []
+    assert sent == []
+    assert app.task_store.list_latest() == ()
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_file_task_cannot_be_dispatched_with_browser_profile(tmp_path: Path) -> None:
+    app, _, client = _app(tmp_path)
+    task, _ = app.task_store.create_from_update(304, "Use browser to read this attached file")
+    key = app._attachment_storage.save(b"text\n")
+    app.task_store.add_attachment(
+        task.task_id, telegram_file_id="file", filename="notes.txt", mime_type="text/plain",
+        size_bytes=5, storage_key=key, caption=task.request,
+    )
+    reply = app._start_task_reply(task.task_id, 42)
+    assert "cannot use the isolated browser-only profile" in reply
+    assert app.task_store.get(task.task_id).execution_ids == ()
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_generated_file_delivery_is_one_shot_and_persisted(tmp_path: Path) -> None:
+    task_store = controller.TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = task_store.create_from_update(401, "Create outputs")
+    path = f"opencode-task-workspace/exports/{task.task_id}/summary.csv"
+    backend = FakeWorkerBackend(files={path: b"name,value\nmean,2\n"})
+    worker = WorkerInterface(backend)
+    sent_methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        sent_methods.append(method)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 812}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client, task_store=task_store,
+        execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+        worker_provider=lambda: nullcontext(worker),
+    )
+    await app._send_task_files(task.task_id, 42)
+    await app._send_task_files(task.task_id, 42)
+    deliveries = task_store.list_file_deliveries(task.task_id)
+    assert len(deliveries) == 1
+    assert deliveries[0].status == "delivered"
+    assert deliveries[0].telegram_message_id == 812
+    assert sent_methods == ["sendDocument"]
+    await app.close()
+    recovered_store = controller.TaskStore(tmp_path / "tasks.sqlite3")
+    recovered = recovered_store.list_file_deliveries(task.task_id)
+    assert recovered[0].status == "delivered" and recovered[0].telegram_message_id == 812
+    app = controller.TelegramController(
+        controller.TelegramConfig("test-token", 42, tmp_path / "updates.sqlite3"),
+        client=client, task_store=recovered_store,
+        execution_store=SqliteExecutionStore(tmp_path / "executions.sqlite3"),
+        worker_provider=lambda: nullcontext(worker),
+    )
+    await app._send_task_files(task.task_id, 42)
+    assert sent_methods == ["sendDocument"]
+    await app.close()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_task_commands_show_records_without_arbitrary_execution(tmp_path: Path) -> None:
     execution_store = SqliteExecutionStore(tmp_path / "executions.sqlite3")
     backend = FakeWorkerBackend(command_plans={
@@ -172,7 +377,7 @@ async def test_task_and_execution_commands_survive_controller_restart(tmp_path: 
     execution_store = SqliteExecutionStore(database)
     first_app, first_sent, first_client = _app(tmp_path, execution_store=execution_store)
     await first_app._handle(_update(40, text="/new review the safety checklist"))
-    task_id = first_sent[-1]["text"].split()[1]
+    task_id = _task_id(first_sent[-1]["text"])
     assert task_id.startswith("task-")
     assert "/run " in first_sent[-1]["text"]
     await first_app._handle(_update(41, text="/tasks"))
@@ -353,7 +558,7 @@ async def test_task_commands_are_owner_private_and_existing_status_commands_rema
     assert execution_store.get("private-task").cancel_requested_at is None
 
     await app._handle(_update(32, text="/new owner task for access-control test"))
-    task_id = sent[-1]["text"].split()[1]
+    task_id = _task_id(sent[-1]["text"])
     assert task_id.startswith("task-")
     await app._handle(_update(34, text="/new forbidden", user_id=7))
     await app._handle(_update(35, text="ordinary unauthorized request", user_id=7))
@@ -386,7 +591,7 @@ async def test_run_requires_explicit_owner_approval_and_delivers_saved_result(tm
         def new_execution_id() -> str:
             return "opencode-live-test"
 
-        def __init__(self, _provider) -> None:
+        def __init__(self, _provider, **_kwargs) -> None:
             pass
 
         async def execute(self, task, execution_id: str) -> TaskRunResult:
@@ -400,7 +605,7 @@ async def test_run_requires_explicit_owner_approval_and_delivers_saved_result(tm
 
     monkeypatch.setattr(controller, "OpenCodeTaskRunner", FakeTaskRunner)
     await app._handle(_update(70, text="/new Explain the difference between CPU and GPU"))
-    task_id = sent[-1]["text"].split()[1]
+    task_id = _task_id(sent[-1]["text"])
     assert app.task_store.get(task_id).status is TaskStatus.QUEUED
     assert dispatched == []
 
@@ -412,7 +617,7 @@ async def test_run_requires_explicit_owner_approval_and_delivers_saved_result(tm
     task = app.task_store.get(task_id)
     assert task is not None and task.status is TaskStatus.SUCCEEDED
     assert task.result is not None and "CPU handles" in task.result
-    assert sent[-1]["text"].startswith(f"Task {task_id} completed.")
+    assert f"Task <code>{task_id}</code> completed." in sent[-1]["text"]
 
     await app._handle(_update(72, text=f"/run {task_id}"))
     assert "succeeded" in sent[-1]["text"]
@@ -454,7 +659,7 @@ async def test_active_task_cancel_uses_existing_worker_execution_id(
         def new_execution_id() -> str:
             return "unused-cancelled-run"
 
-        def __init__(self, _provider) -> None:
+        def __init__(self, _provider, **_kwargs) -> None:
             pass
 
         async def execute(self, _task, execution_id: str) -> TaskRunResult:
@@ -528,7 +733,7 @@ async def test_telegram_delivery_failure_keeps_completed_result(tmp_path: Path, 
         def new_execution_id() -> str:
             return "delivery-run"
 
-        def __init__(self, _provider) -> None:
+        def __init__(self, _provider, **_kwargs) -> None:
             pass
 
         async def execute(self, task, execution_id: str) -> TaskRunResult:
@@ -537,7 +742,7 @@ async def test_telegram_delivery_failure_keeps_completed_result(tmp_path: Path, 
 
     monkeypatch.setattr(controller, "OpenCodeTaskRunner", FakeTaskRunner)
     await app._handle(_update(93, text="/new Deliver this after completion"))
-    task_id = sent[-1]["text"].split()[1]
+    task_id = _task_id(sent[-1]["text"])
     await app._handle(_update(94, text=f"/run {task_id}"))
     assert app._active_task_run is not None
     await app._active_task_run

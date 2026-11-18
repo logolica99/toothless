@@ -46,6 +46,29 @@ class TaskRecord:
     approved_at: datetime | None
     cancellation_requested_at: datetime | None
     notification_error: str | None
+    attachments: tuple[TaskAttachment, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAttachment:
+    filename: str
+    mime_type: str
+    size_bytes: int
+    storage_key: str
+    telegram_file_id: str
+    caption: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFileDelivery:
+    guest_path: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    status: str
+    telegram_message_id: int | None
+    error: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +136,29 @@ class TaskStore:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (task_id, execution_id)
                 );
+                CREATE TABLE IF NOT EXISTS task_attachments (
+                    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+                    telegram_file_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    storage_key TEXT NOT NULL,
+                    caption TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (task_id, filename)
+                );
+                CREATE TABLE IF NOT EXISTS task_file_deliveries (
+                    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+                    guest_path TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    telegram_message_id INTEGER,
+                    error TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (task_id, guest_path)
+                );
                 CREATE INDEX IF NOT EXISTS task_created_idx ON tasks(created_at DESC, task_id DESC);
                 CREATE INDEX IF NOT EXISTS task_events_idx ON task_events(task_id, event_id);"""
             )
@@ -169,7 +215,76 @@ class TaskStore:
                 "SELECT execution_id FROM task_executions WHERE task_id = ? ORDER BY created_at, execution_id",
                 (task_id,),
             ).fetchall()
-        return _record(row, tuple(str(item["execution_id"]) for item in execution_ids))
+            attachments = connection.execute(
+                "SELECT filename, mime_type, size_bytes, storage_key, telegram_file_id, caption, created_at "
+                "FROM task_attachments WHERE task_id = ? ORDER BY filename", (task_id,)
+            ).fetchall()
+        return _record(
+            row,
+            tuple(str(item["execution_id"]) for item in execution_ids),
+            tuple(_attachment(item) for item in attachments),
+        )
+
+    def add_attachment(
+        self, task_id: str, *, telegram_file_id: str, filename: str, mime_type: str,
+        size_bytes: int, storage_key: str, caption: str,
+    ) -> bool:
+        validate_task_id(task_id)
+        if not telegram_file_id or len(telegram_file_id) > 512 or size_bytes < 1:
+            raise ValueError("invalid attachment metadata")
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO task_attachments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, telegram_file_id, filename, mime_type[:120], size_bytes, storage_key, caption[:4000], _now().isoformat()),
+            )
+        return cursor.rowcount == 1
+
+    def begin_file_delivery(
+        self, task_id: str, *, guest_path: str, filename: str, mime_type: str, size_bytes: int,
+    ) -> bool:
+        """Persist a one-shot delivery intent; interrupted sends remain uncertain."""
+        validate_task_id(task_id)
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO task_file_deliveries "
+                "(task_id, guest_path, filename, mime_type, size_bytes, status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'sending', ?)",
+                (task_id, guest_path, filename, mime_type, size_bytes, _now().isoformat()),
+            )
+        return cursor.rowcount == 1
+
+    def finish_file_delivery(
+        self, task_id: str, guest_path: str, *, status: str,
+        telegram_message_id: int | None = None, error: str | None = None,
+    ) -> None:
+        if status not in {"delivered", "failed", "uncertain"}:
+            raise ValueError("invalid file delivery status")
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE task_file_deliveries SET status = ?, telegram_message_id = ?, error = ?, updated_at = ? "
+                "WHERE task_id = ? AND guest_path = ? AND status = 'sending'",
+                (status, telegram_message_id, (error or "")[:500] or None, _now().isoformat(), task_id, guest_path),
+            )
+
+    def list_file_deliveries(self, task_id: str) -> tuple[TaskFileDelivery, ...]:
+        validate_task_id(task_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT guest_path, filename, mime_type, size_bytes, status, telegram_message_id, error "
+                "FROM task_file_deliveries WHERE task_id = ? ORDER BY filename", (task_id,)
+            ).fetchall()
+        return tuple(TaskFileDelivery(**dict(row)) for row in rows)
+
+    def resolve_interrupted_file_deliveries(self) -> int:
+        """Mark pre-restart sends uncertain; never intentionally replay them."""
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "UPDATE task_file_deliveries SET status = 'uncertain', "
+                "error = 'Controller restarted before Telegram delivery was confirmed.', updated_at = ? "
+                "WHERE status = 'sending'",
+                (_now().isoformat(),),
+            )
+        return cursor.rowcount
 
     def list_latest(self, limit: int = 10) -> tuple[TaskRecord, ...]:
         if isinstance(limit, bool) or not 1 <= limit <= 100:
@@ -271,6 +386,29 @@ class TaskStore:
                 )
             connection.commit()
 
+    def record_progress(self, task_id: str, progress: str) -> bool:
+        validate_task_id(task_id)
+        progress = progress.strip()
+        if not progress or len(progress) > 320:
+            raise ValueError("progress must contain 1 to 320 characters")
+        now = _now().isoformat()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if row is None or row["status"] != TaskStatus.RUNNING.value:
+                connection.rollback()
+                return False
+            connection.execute(
+                "UPDATE tasks SET progress = ?, updated_at = ? WHERE task_id = ?",
+                (progress, now, task_id),
+            )
+            connection.execute(
+                "INSERT INTO task_events(task_id, event_type, detail, created_at) VALUES (?, 'progress', ?, ?)",
+                (task_id, progress, now),
+            )
+            connection.commit()
+        return True
+
     def request_task_cancellation(self, task_id: str) -> tuple[TaskRecord | None, bool]:
         validate_task_id(task_id)
         now = _now().isoformat()
@@ -341,6 +479,38 @@ class TaskStore:
             )
             connection.commit()
         return self.get(task_id)
+
+    def record_recovered_partial_result(
+        self, task_id: str, result: str, *, progress: str, detail: str
+    ) -> bool:
+        """Attach independently verified output to a timed-out task without changing its failure state."""
+        validate_task_id(task_id)
+        if not result.strip() or len(result) > 48_000 or len(progress) > 320 or len(detail) > 800:
+            raise ValueError("recovered result metadata exceeds the allowed limits")
+        now = _now().isoformat()
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, error, result FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["status"] != TaskStatus.FAILED.value
+                or not str(row["error"] or "").startswith("timed_out:")
+                or row["result"] is not None
+            ):
+                connection.rollback()
+                return False
+            connection.execute(
+                "UPDATE tasks SET result = ?, progress = ?, updated_at = ? WHERE task_id = ?",
+                (result, progress, now, task_id),
+            )
+            connection.execute(
+                "INSERT INTO task_events(task_id, event_type, detail, created_at) VALUES (?, 'partial_result_recovered', ?, ?)",
+                (task_id, detail, now),
+            )
+            connection.commit()
+        return True
 
     def active_tasks(self) -> tuple[TaskRecord, ...]:
         with closing(self._connect()) as connection:
@@ -476,7 +646,9 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _record(row: sqlite3.Row, execution_ids: tuple[str, ...]) -> TaskRecord:
+def _record(
+    row: sqlite3.Row, execution_ids: tuple[str, ...], attachments: tuple[TaskAttachment, ...] = ()
+) -> TaskRecord:
     return TaskRecord(
         task_id=str(row["task_id"]),
         request=str(row["request"]),
@@ -495,4 +667,14 @@ def _record(row: sqlite3.Row, execution_ids: tuple[str, ...]) -> TaskRecord:
             if row["cancellation_requested_at"] else None
         ),
         notification_error=row["notification_error"],
+        attachments=attachments,
+    )
+
+
+def _attachment(row: sqlite3.Row) -> TaskAttachment:
+    return TaskAttachment(
+        filename=str(row["filename"]), mime_type=str(row["mime_type"]),
+        size_bytes=int(row["size_bytes"]), storage_key=str(row["storage_key"]),
+        telegram_file_id=str(row["telegram_file_id"]), caption=str(row["caption"]),
+        created_at=datetime.fromisoformat(str(row["created_at"])),
     )

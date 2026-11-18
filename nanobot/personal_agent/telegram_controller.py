@@ -22,11 +22,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Generator, cast
+from urllib.parse import quote
 
 import httpx
 
-from nanobot.personal_agent.opencode_task import OpenCodeTaskRunner, parse_task_result
+from nanobot.personal_agent.opencode_task import (
+    OpenCodeTaskRunner,
+    needs_browser_profile,
+    parse_task_result,
+)
 from nanobot.personal_agent.task_store import TaskStatus, TaskStore, validate_task_id
+from nanobot.personal_agent.telegram_files import (
+    MAX_OUTBOUND_FILES,
+    MAX_OUTBOUND_TOTAL_BYTES,
+    MAX_TASK_FILES,
+    MAX_UPLOAD_BYTES,
+    AttachmentStorage,
+    prepare_upload,
+    safe_filename,
+)
 from nanobot.worker.execution_store import ExecutionRecord, SqliteExecutionStore
 from nanobot.worker.interface import (
     ExecutionStatus,
@@ -301,15 +315,10 @@ def _task_store(update_database: Path) -> TaskStore:
     return TaskStore(update_database.parent / "tasks.sqlite3")
 
 
-def _text(update: dict[str, Any]) -> tuple[int, int, str, str] | None:
-    message = update.get("message")
-    if not isinstance(message, dict):
-        return None
-    message = cast(dict[str, Any], message)
+def _message_identity(message: dict[str, Any]) -> tuple[int, int, str] | None:
     sender = message.get("from")
     chat = message.get("chat")
-    text = message.get("text")
-    if not isinstance(sender, dict) or not isinstance(chat, dict) or not isinstance(text, str):
+    if not isinstance(sender, dict) or not isinstance(chat, dict):
         return None
     sender = cast(dict[str, Any], sender)
     chat = cast(dict[str, Any], chat)
@@ -319,7 +328,36 @@ def _text(update: dict[str, Any]) -> tuple[int, int, str, str] | None:
         return None
     if not isinstance(chat_id, int) or isinstance(chat_id, bool):
         return None
-    return user_id, chat_id, str(chat.get("type", "")), text
+    return user_id, chat_id, str(chat.get("type", ""))
+
+
+def _safe_telegram_file_path(value: str) -> bool:
+    from pathlib import PurePosixPath
+
+    path = PurePosixPath(value)
+    return (
+        len(value) <= 1024
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and "\\" not in value
+        and "\x00" not in value
+    )
+
+
+def _mime_type(filename: str) -> str:
+    return {
+        ".pdf": "application/pdf",
+        ".txt": "text/plain",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }[Path(filename).suffix.lower()]
+
+
+def _expects_task_files(request: str) -> bool:
+    return bool(re.search(r"\b(file|save|csv|png|jpg|pdf|json|script|graph|export|spreadsheet|image)\b", request, re.IGNORECASE))
 
 
 def command_reply(text: str, *, worker_state: str) -> str:
@@ -333,7 +371,8 @@ def command_reply(text: str, *, worker_state: str) -> str:
             "Commands: /new <request>, /run <task_id>, /tasks, /task <task_id>, /update <task_id> <instructions>, "
             "/pause <task_id>, /resume <task_id>, /cancel <task_id|execution_id>, "
             "/executions, /execution <execution_id>, /start, /ping, /help, /worker, /status. "
-            "Task execution requires explicit /run approval; model tools remain disabled."
+            "Attach a supported file with a task caption to create a queued file task. Upload limit: 512 KiB. "
+            "Workspace tasks require explicit /run approval; browser tasks use a separate profile."
         )
     if command == "/worker":
         return f"Ubuntu worker: {worker_state}. This query does not start or change the VM."
@@ -341,7 +380,7 @@ def command_reply(text: str, *, worker_state: str) -> str:
         return (
             "Controller: connected (Telegram polling active)\n"
             f"Ubuntu worker: {worker_state}\n"
-            "Phase 05.1: owner-approved OpenCode tasks run in Ubuntu; model tools remain disabled."
+            "Phase 05: owner-approved OpenCode tasks run in Ubuntu; workspace and browser profiles stay separate."
         )
     if command.startswith("/"):
         return "Unknown command. Use /help to see the commands currently available."
@@ -364,6 +403,7 @@ class TelegramController:
             execution_store if execution_store is not None else _execution_store()
         )
         self.task_store = task_store if task_store is not None else _task_store(config.database)
+        self._attachment_storage = AttachmentStorage(self.task_store.path.parent / "attachments")
         self._worker_provider = worker_provider
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(40, connect=10))
         self._owns_client = client is None
@@ -402,12 +442,24 @@ class TelegramController:
             return
         if self.store.contains(update_id):
             return
-        fields = _text(update)
-        if fields is None:
+        message_raw = update.get("message")
+        if not isinstance(message_raw, dict):
             self.store.claim(update_id)
             return
-        user_id, chat_id, chat_type, message = fields
+        message_data = cast(dict[str, Any], message_raw)
+        identity = _message_identity(message_data)
+        if identity is None:
+            self.store.claim(update_id)
+            return
+        user_id, chat_id, chat_type = identity
         if user_id != self.config.owner_id or chat_type != "private":
+            self.store.claim(update_id)
+            return
+        if "document" in message_data or "photo" in message_data:
+            await self._handle_file_update(update_id, chat_id, message_data)
+            return
+        message = message_data.get("text")
+        if not isinstance(message, str):
             self.store.claim(update_id)
             return
         words = message.strip().split(maxsplit=1)
@@ -454,6 +506,113 @@ class TelegramController:
             LOGGER.info("Handled authorized unknown Telegram command")
         else:
             LOGGER.info("Handled authorized text message; autonomous dispatch is disabled")
+
+    async def _handle_file_update(
+        self, update_id: int, chat_id: int, message: dict[str, Any]
+    ) -> None:
+        file_id: str
+        filename: str
+        mime_type: str
+        declared_size: int | None
+        document = message.get("document")
+        if isinstance(document, dict):
+            document = cast(dict[str, Any], document)
+            file_id = str(document.get("file_id", ""))
+            raw_name = document.get("file_name")
+            if not isinstance(raw_name, str):
+                await self._reject_upload(update_id, chat_id, "Please send a named PDF, TXT, CSV, JSON, PNG, JPG, or small ZIP file.")
+                return
+            try:
+                filename = safe_filename(raw_name)
+            except ValueError as exc:
+                await self._reject_upload(update_id, chat_id, str(exc))
+                return
+            mime_type = str(document.get("mime_type", "application/octet-stream"))
+            declared_size = document.get("file_size") if isinstance(document.get("file_size"), int) else None
+        else:
+            photos = message.get("photo")
+            if not isinstance(photos, list) or not photos or not isinstance(photos[-1], dict):
+                await self._reject_upload(update_id, chat_id, "The Telegram photo attachment was invalid.")
+                return
+            photo = cast(dict[str, Any], photos[-1])
+            file_id = str(photo.get("file_id", ""))
+            filename, mime_type = "telegram-photo.jpg", "image/jpeg"
+            declared_size = photo.get("file_size") if isinstance(photo.get("file_size"), int) else None
+        if not file_id or len(file_id) > 512:
+            await self._reject_upload(update_id, chat_id, "The Telegram file reference was invalid.")
+            return
+        if declared_size is not None and not 0 < declared_size <= MAX_UPLOAD_BYTES:
+            await self._reject_upload(update_id, chat_id, f"Files must be no larger than {MAX_UPLOAD_BYTES // 1024} KiB.")
+            return
+        caption = message.get("caption", "")
+        caption = caption.strip() if isinstance(caption, str) else ""
+        request = caption.removeprefix("/new ").strip() if caption else f"Review and summarize the attached file {filename}."
+        try:
+            file_info = await self._api("getFile", {"file_id": file_id})
+            if not isinstance(file_info, dict):
+                raise ValueError("Telegram file metadata was invalid")
+            file_info = cast(dict[str, Any], file_info)
+            file_path = file_info.get("file_path")
+            file_size = file_info.get("file_size", declared_size)
+            if not isinstance(file_path, str) or not _safe_telegram_file_path(file_path):
+                raise ValueError("Telegram returned an invalid file path")
+            if not isinstance(file_size, int) or not 0 < file_size <= MAX_UPLOAD_BYTES:
+                raise ValueError(f"Files must be no larger than {MAX_UPLOAD_BYTES // 1024} KiB.")
+            content = await self._download_telegram_file(file_path, file_size)
+            prepared = prepare_upload(filename, content, mime_type)
+            if len(prepared) > MAX_TASK_FILES:
+                raise ValueError("The upload contains too many files")
+            if not request:
+                raise ValueError("Add a short task request in the file caption")
+            staged = [(item, self._attachment_storage.save(item.content)) for item in prepared]
+            task, created = self.task_store.create_from_update(update_id, request)
+            for item, storage_key in staged:
+                self.task_store.add_attachment(
+                    task.task_id,
+                    telegram_file_id=file_id,
+                    filename=item.filename,
+                    mime_type=item.mime_type,
+                    size_bytes=len(item.content),
+                    storage_key=storage_key,
+                    caption=caption,
+                )
+            if not self.store.claim(update_id):
+                return
+            if created:
+                reply = (
+                    f"**File received.** Task {task.task_id} is queued.\n"
+                    f"Files: {', '.join(item.filename for item in prepared)}\n\n"
+                    f"To approve execution, send:\n`/run {task.task_id}`"
+                )
+            else:
+                reply = f"Upload update was already recorded as task {task.task_id}; it was not duplicated."
+        except (httpx.HTTPError, RuntimeError, ValueError, OSError) as exc:
+            # Do not include request URLs, Telegram file paths, or local paths in logs/replies.
+            self.store.claim(update_id)
+            reason = str(exc) if isinstance(exc, ValueError) else "Telegram file transfer failed"
+            reply = f"File was not accepted: {_clean_text(reason, limit=180)}. No task was started."
+            LOGGER.warning("Authorized Telegram upload failed (%s)", type(exc).__name__)
+        await self._send_text(chat_id, reply)
+
+    async def _reject_upload(self, update_id: int, chat_id: int, message: str) -> None:
+        self.store.claim(update_id)
+        await self._send_text(chat_id, f"File was not accepted: {_clean_text(message, limit=200)}.")
+
+    async def _download_telegram_file(self, file_path: str, expected_size: int) -> bytes:
+        url = f"https://api.telegram.org/file/bot{self.config.token}/{quote(file_path, safe='/')}"
+        output = bytearray()
+        async with self._client.stream("GET", url, timeout=httpx.Timeout(30, connect=10)) as response:
+            response.raise_for_status()
+            header = response.headers.get("content-length")
+            if header and (not header.isdecimal() or int(header) > MAX_UPLOAD_BYTES):
+                raise ValueError("Telegram file exceeds the configured size limit")
+            async for chunk in response.aiter_bytes():
+                output.extend(chunk)
+                if len(output) > MAX_UPLOAD_BYTES:
+                    raise ValueError("Telegram file exceeds the configured size limit")
+        if len(output) != expected_size:
+            raise ValueError("Telegram file size did not match its metadata")
+        return bytes(output)
 
     async def _send_text(self, chat_id: int, text: str) -> None:
         await self._api("sendMessage", {
@@ -509,6 +668,10 @@ class TelegramController:
             lines.extend(("Result:", _clean_text(task.result, limit=OUTPUT_PREVIEW_CHARS * 4)))
         if task.notification_error:
             lines.append("Telegram delivery: failed; result remains saved on the host.")
+        deliveries = self.task_store.list_file_deliveries(task_id)
+        if deliveries:
+            lines.append("Generated files:")
+            lines.extend(f"• {item.filename}: {item.status}" for item in deliveries)
         if task.execution_ids:
             lines.append("Worker executions: " + ", ".join(task.execution_ids[:10]))
         else:
@@ -536,6 +699,9 @@ class TelegramController:
             validate_task_id(task_id)
         except ValueError:
             return "Invalid task ID. Use the ID shown by /tasks."
+        candidate = self.task_store.get(task_id)
+        if candidate is not None and candidate.attachments and needs_browser_profile(candidate.request + "\n" + candidate.instructions):
+            return "This task has files and cannot use the isolated browser-only profile. Remove the attachment or create a workspace-only task."
         if self._active_task_run is not None and not self._active_task_run.done():
             active = next(iter(self.task_store.active_tasks()), None)
             if active is not None:
@@ -553,8 +719,40 @@ class TelegramController:
         return f"Task {task.task_id} is dispatching to the Ubuntu worker. I will report running only after worker acknowledgement."
 
     async def _execute_task(self, task: Any, execution_id: str, chat_id: int) -> None:
+        last_progress_minute = 0
+
+        async def report_progress(elapsed_seconds: float) -> None:
+            nonlocal last_progress_minute
+            elapsed_minutes = int(elapsed_seconds // 60)
+            if elapsed_minutes < 1 or elapsed_minutes <= last_progress_minute:
+                return
+            current = self.task_store.get(task.task_id)
+            if current is None or current.status is not TaskStatus.RUNNING:
+                return
+            progress = (
+                f"Still running on the Ubuntu worker ({elapsed_minutes} minute(s) elapsed); "
+                "no result is available yet."
+            )
+            if not self.task_store.record_progress(task.task_id, progress):
+                return
+            last_progress_minute = elapsed_minutes
+            try:
+                await self._send_text(
+                    chat_id,
+                    f"Task `{task.task_id}` is still running on Ubuntu ({elapsed_minutes} minute(s)). "
+                    "No result is available yet.",
+                )
+            except (httpx.HTTPError, RuntimeError, ValueError):
+                LOGGER.warning("Telegram progress delivery failed for task %s", task.task_id)
+
         runner = OpenCodeTaskRunner(
-            lambda: _remote_worker(accepted_callback=self.task_store.mark_worker_accepted)
+            lambda: _remote_worker(accepted_callback=self.task_store.mark_worker_accepted),
+            attachment_storage=self._attachment_storage,
+            cancel_requested=lambda: (
+                (current := self.task_store.get(task.task_id)) is None
+                or current.status is TaskStatus.CANCELLING
+            ),
+            progress_callback=report_progress,
         )
         outcome = await runner.execute(task, execution_id)
         saved = self.task_store.finish_execution(
@@ -579,6 +777,111 @@ class TelegramController:
         except (httpx.HTTPError, RuntimeError):
             self.task_store.record_notification_error(saved.task_id, "Telegram send failed after task completion.")
             LOGGER.warning("Telegram result delivery failed for task %s", saved.task_id)
+        if outcome.status is TaskStatus.SUCCEEDED and _expects_task_files(saved.request + "\n" + saved.instructions):
+            await self._send_task_files(saved.task_id, chat_id)
+
+    async def _send_task_files(self, task_id: str, chat_id: int) -> None:
+        if self._worker_provider is None:
+            return
+        root = f"opencode-task-workspace/exports/{task_id}"
+        delivered_bytes = 0
+        considered_files = 0
+        try:
+            with self._worker_provider() as worker:
+                entries = await worker.list_files(root)
+                for entry in entries:
+                    if considered_files >= MAX_OUTBOUND_FILES:
+                        break
+                    if entry.kind.value != "file" or entry.size_bytes > 1024 * 1024:
+                        continue
+                    try:
+                        filename = safe_filename(entry.name)
+                    except ValueError:
+                        continue
+                    extension = Path(filename).suffix.lower()
+                    if extension not in {".pdf", ".txt", ".csv", ".json", ".png", ".jpg", ".jpeg"}:
+                        continue
+                    if delivered_bytes + entry.size_bytes > MAX_OUTBOUND_TOTAL_BYTES:
+                        continue
+                    considered_files += 1
+                    delivered_bytes += entry.size_bytes
+                    guest_path = f"{root}/{filename}"
+                    mime_type = _mime_type(filename)
+                    if not self.task_store.begin_file_delivery(
+                        task_id, guest_path=guest_path, filename=filename,
+                        mime_type=mime_type, size_bytes=entry.size_bytes,
+                    ):
+                        continue
+                    try:
+                        content = await worker.read_file(guest_path)
+                    except WorkerOperationError:
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="failed", error="Guest file could not be read."
+                        )
+                        continue
+                    if len(content) != entry.size_bytes or not content:
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="failed", error="Guest file size changed before delivery."
+                        )
+                        continue
+                    try:
+                        result = await self._send_file_once(chat_id, filename, mime_type, content)
+                    except httpx.TransportError:
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="uncertain", error="Telegram transport ended before delivery was confirmed."
+                        )
+                        continue
+                    except httpx.HTTPStatusError as exc:
+                        delivery_status = "uncertain" if exc.response.status_code >= 500 else "failed"
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status=delivery_status,
+                            error="Telegram did not confirm the file delivery."
+                        )
+                        continue
+                    except (RuntimeError, ValueError):
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="uncertain", error="Telegram response could not confirm delivery."
+                        )
+                        continue
+                    if not isinstance(result, dict):
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="failed", error="Telegram did not confirm the file message."
+                        )
+                        continue
+                    result = cast(dict[str, Any], result)
+                    message_id = result.get("message_id")
+                    if not isinstance(message_id, int):
+                        self.task_store.finish_file_delivery(
+                            task_id, guest_path, status="failed", error="Telegram did not confirm the file message."
+                        )
+                        continue
+                    self.task_store.finish_file_delivery(
+                        task_id, guest_path, status="delivered", telegram_message_id=message_id
+                    )
+        except WorkerOperationError as exc:
+            if exc.code.value == "file_not_found":
+                return
+            LOGGER.warning("Generated file retrieval failed for task %s", task_id)
+        except (httpx.HTTPError, RuntimeError, ValueError):
+            LOGGER.warning("Generated file retrieval failed for task %s", task_id)
+
+    async def _send_file_once(self, chat_id: int, filename: str, mime_type: str, content: bytes) -> Any:
+        method = "sendPhoto" if Path(filename).suffix.lower() in {".png", ".jpg", ".jpeg"} else "sendDocument"
+        field = "photo" if method == "sendPhoto" else "document"
+        response = await self._client.post(
+            f"{self._base_url}/{method}",
+            data={"chat_id": str(chat_id)},
+            files={field: (filename, content, mime_type)},
+            timeout=httpx.Timeout(40, connect=10),
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("Telegram did not confirm the file message")
+        body = cast(dict[str, Any], body)
+        if body.get("ok") is not True:
+            raise RuntimeError("Telegram did not confirm the file message")
+        return body.get("result")
 
     def _transition_task_reply(self, argument: str, target: TaskStatus) -> str:
         if not argument:
@@ -678,6 +981,8 @@ class TelegramController:
                     if task.status is not TaskStatus.CANCELLING or not task.execution_ids:
                         return f"Task {task.task_id} cancellation intent is recorded; execution state is uncertain."
                     worker_execution_id = task.execution_ids[-1]
+                    if self.execution_store.get(worker_execution_id) is None:
+                        return f"Task {task.task_id} cancellation is recorded while preparing the upload; dispatch will stop before model execution."
                     self.execution_store.mark_cancel_requested(worker_execution_id)
                     try:
                         with self._worker_provider() as worker:
@@ -786,6 +1091,7 @@ class TelegramController:
 
     async def _recover_active_tasks(self) -> None:
         """Reconcile host-owned execution IDs without resubmitting a command."""
+        self.task_store.resolve_interrupted_file_deliveries()
         for task in self.task_store.active_tasks():
             if not task.execution_ids:
                 self.task_store.mark_unresolved(task.task_id, "Dispatch intent has no worker execution ID.")
@@ -808,6 +1114,9 @@ class TelegramController:
                 self._reconcile_task(task, execution_id),
                 name=f"toothless-reconcile-{task.task_id}",
             )
+        for task in self.task_store.list_latest(100):
+            if task.status is TaskStatus.SUCCEEDED and _expects_task_files(task.request + "\n" + task.instructions):
+                await self._send_task_files(task.task_id, self.config.owner_id)
 
     async def _reconcile_task(self, task: Any, execution_id: str) -> None:
         try:
@@ -854,6 +1163,8 @@ class TelegramController:
             await self._send_text(self.config.owner_id, message)
         except (httpx.HTTPError, RuntimeError):
             self.task_store.record_notification_error(saved.task_id, "Telegram recovery notification failed.")
+        if outcome.status is TaskStatus.SUCCEEDED and _expects_task_files(saved.request + "\n" + saved.instructions):
+            await self._send_task_files(saved.task_id, self.config.owner_id)
 
 
 async def _run() -> None:

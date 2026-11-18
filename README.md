@@ -55,6 +55,7 @@ Tart runs Ubuntu through Softnet. The protected launcher applies and verifies a 
 | 05.1 | Explicit `/run` approval, real OpenCode execution in Ubuntu, result delivery, restart recovery, duplicate-run protection, and bounded cancellation | Verified with the selected model and live Telegram bot |
 | 05.2 | Rootless guest workspace file and shell tools after `/run` | Verified for bounded workspace operations; apt/dpkg and guest root remain unavailable to the model |
 | 05.3 | Guest-only Playwright browser with a browser-specific OpenCode profile | Verified for current deployment profile with live Example Domain and official Python research tasks, restart recovery, duplicate-run protection, and worker cancellation. Cancellation was confirmed before the first browser tool call; in-flight Chromium navigation cancellation remains unverified. |
+| 05.4 | Owner-approved Telegram file input and generated-file delivery | Implemented and locally checked. A real CSV produced a verified PNG and summary CSV that were delivered to Telegram, but OpenCode timed out before returning a final response; Phase 05.4 remains unverified. |
 
 See [the feature map](docs/features.md), [current status](docs/status.md), and [phase reports](reports/) for evidence and remaining work.
 
@@ -84,6 +85,8 @@ Common commands:
 | `/help` | List available commands |
 
 A task remains queued until the owner sends `/run`. Toothless does not automatically run previously queued tasks or start a stopped VM in response to status, task-list, or cancellation requests.
+
+Owners can also send supported files (PDF, TXT, CSV, JSON, PNG, JPG, or small ZIP) with task instructions in the caption. After `/run`, the workspace profile can read attachments from its task-specific Ubuntu workspace and return bounded generated files from that task's export directory. Browser-only tasks cannot use uploaded attachments. See [file handling and security](docs/file-security.md) for limits, retention, and the approved model-processing path.
 
 ## Run the current worker
 
@@ -115,6 +118,8 @@ The credential is entered and stored inside the Ubuntu guest. Do not copy the Ma
 - The worker starts through `ops/worker/start.sh`; direct Tart launches bypass the repository's Softnet policy setup and are unprotected.
 - OpenCode uses the fixed model `opencode-go/glm-5.3`. The task runner rejects other models and has no automatic provider or paid-model fallback.
 - OpenCode receives tools only through an owner-approved `/run` in Ubuntu. Workspace tools run as the non-sudo guest account and are scoped to its workspace; browser tasks use a browser-only tool profile. Plugins, subagents, guest root, apt/dpkg, and host-side model tools remain disabled.
+- Telegram file downloads, host staging, guest staging, and generated-file delivery are bounded and task-scoped. Uploaded contents read by OpenCode may be sent to the selected model through the approved inference path. Generated files are sent only from the fixed guest export directory; uncertain Telegram delivery is not retried automatically.
+- Runtime limits remain enabled for every task profile. The controller sends status-only updates once per minute while the worker reports a task running; these updates are not a guarantee of model activity or completion. Phase 05.4's real CSV task produced and delivered artifacts but timed out before OpenCode returned its final response, so that phase is not verified.
 - SSH host-key verification is strict. The Mac's SSH agent, home directory, Docker socket, clipboard, and host filesystem are not mounted or forwarded to Ubuntu.
 - Phase 01 isolation applies to the tested current deployment profile; future network changes and IPv6-enabled routes need separate verification.
 - DNS is routed through a validated relay and rate-limited, but DNS names can carry data. Public encrypted DNS services and other public IPv4 destinations remain reachable.

@@ -158,3 +158,63 @@ def test_missing_execution_history_is_unknown_and_never_requeued(tmp_path: Path)
     assert unknown.progress == "Execution outcome is unknown; the operation was not resubmitted."
     latest, changed = store.claim_for_dispatch(task.task_id, "reset-run-2")
     assert not changed and latest is not None and latest.status is TaskStatus.UNKNOWN
+
+
+def test_interrupted_file_delivery_becomes_uncertain_without_retry(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = store.create_from_update(104, "Create an output CSV")
+    path = f"opencode-task-workspace/exports/{task.task_id}/result.csv"
+    assert store.begin_file_delivery(
+        task.task_id, guest_path=path, filename="result.csv", mime_type="text/csv", size_bytes=12
+    )
+    reopened = TaskStore(tmp_path / "tasks.sqlite3")
+    assert reopened.resolve_interrupted_file_deliveries() == 1
+    delivery = reopened.list_file_deliveries(task.task_id)[0]
+    assert delivery.status == "uncertain"
+    assert not reopened.begin_file_delivery(
+        task.task_id, guest_path=path, filename="result.csv", mime_type="text/csv", size_bytes=12
+    )
+
+
+def test_recovered_result_is_saved_without_rewriting_timeout_failure(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = store.create_from_update(105, "Analyze the uploaded CSV")
+    claimed, changed = store.claim_for_dispatch(task.task_id, "opencode-timeout-1")
+    assert changed and claimed is not None
+    store.mark_worker_accepted("opencode-timeout-1")
+    failed = store.finish_execution(
+        "opencode-timeout-1", TaskStatus.FAILED, error="timed_out: OpenCode timed out."
+    )
+    assert failed is not None and failed.status is TaskStatus.FAILED
+
+    assert store.record_recovered_partial_result(
+        task.task_id,
+        "Independent check: count 5, mean 6.",
+        progress="Artifacts recovered and independently checked after timeout.",
+        detail="Partial artifact result recovered; task remains failed.",
+    )
+    recovered = store.get(task.task_id)
+    assert recovered is not None and recovered.status is TaskStatus.FAILED
+    assert recovered.error == "timed_out: OpenCode timed out."
+    assert recovered.result == "Independent check: count 5, mean 6."
+    assert [event.event_type for event in store.events(task.task_id)][-1] == "partial_result_recovered"
+    assert not store.record_recovered_partial_result(
+        task.task_id,
+        "duplicate",
+        progress="duplicate",
+        detail="duplicate",
+    )
+
+
+def test_task_progress_is_persisted_only_while_running(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = store.create_from_update(106, "A task with progress")
+    assert not store.record_progress(task.task_id, "Still running")
+    claimed, changed = store.claim_for_dispatch(task.task_id, "opencode-progress-1")
+    assert changed and claimed is not None
+    store.mark_worker_accepted("opencode-progress-1")
+    assert store.record_progress(task.task_id, "Still running on Ubuntu (1 minute elapsed).")
+    updated = store.get(task.task_id)
+    assert updated is not None and updated.progress == "Still running on Ubuntu (1 minute elapsed)."
+    store.finish_execution("opencode-progress-1", TaskStatus.FAILED, error="timed_out: stop")
+    assert not store.record_progress(task.task_id, "late progress")

@@ -43,6 +43,7 @@ MAX_OUTPUT_BYTES = 1_048_576
 MAX_EVENT_BYTES = 65_536
 MAX_RESULT_BYTES = 48_000
 TIMEOUT_SECONDS = 120
+FILE_TASK_TIMEOUT_SECONDS = 300
 BROWSER_TIMEOUT_SECONDS = 300
 _child: subprocess.Popen[bytes] | None = None
 _scope_unit: str | None = None
@@ -572,6 +573,21 @@ def _approved_model(value: object) -> bool:
     return False
 
 
+def _task_timeout(request: dict[str, object], *, browser: bool) -> int:
+    """Allow a longer fixed deadline only for host-marked attachment tasks."""
+    file_task = request.get("file_task")
+    requested_timeout = request.get("timeout_seconds")
+    if browser:
+        if file_task is not None or requested_timeout is not None:
+            raise ValueError("browser task timeout is fixed")
+        return BROWSER_TIMEOUT_SECONDS
+    if file_task is True and requested_timeout == FILE_TASK_TIMEOUT_SECONDS:
+        return FILE_TASK_TIMEOUT_SECONDS
+    if file_task is None and requested_timeout is None:
+        return TIMEOUT_SECONDS
+    raise ValueError("workspace task timeout is not authorized")
+
+
 def _permission_summary(value: object) -> str:
     if isinstance(value, dict):
         permission_map = cast(dict[str, object], value)
@@ -640,7 +656,10 @@ def main() -> int:
     if request.get("model") != MODEL or not isinstance(prompt, str) or profile not in {"worker", "browser"}:
         return _emit({"status": "failed", "error": "Task request does not match the approved model policy."})
     browser = profile == "browser"
-    timeout_seconds = BROWSER_TIMEOUT_SECONDS if browser else TIMEOUT_SECONDS
+    try:
+        timeout_seconds = _task_timeout(request, browser=browser)
+    except ValueError:
+        return _emit({"status": "failed", "error": "Task runtime did not match the authorized bounded profile."})
     config_path = CONFIG_BROWSER if browser else CONFIG
     config_hash = CONFIG_BROWSER_SHA256 if browser else CONFIG_SHA256
     agent_name = AGENT_BROWSER if browser else AGENT

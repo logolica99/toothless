@@ -267,6 +267,12 @@ def _write_file(request: dict[str, Any]) -> dict[str, Any]:
         raise AgentError("invalid_request", "path resolves outside the worker workspace")
     descriptor, temporary = tempfile.mkstemp(prefix=".toothless-", dir=path.parent)
     try:
+        if path.is_relative_to(OPENCODE_WORKSPACE_ROOT.resolve(strict=True)):
+            # The SSH helper runs as admin after dropping its initial root
+            # privilege, so it cannot chown a file to toothless-agent. Keep
+            # the file readable inside the already access-controlled workspace
+            # instead of attempting an ownership change that always fails.
+            os.fchmod(descriptor, 0o644)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
             stream.flush()
