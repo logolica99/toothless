@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import grp
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import pwd
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,7 @@ MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_BYTES = 32 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_FILE_BYTES = 1024 * 1024
+MAX_DESKTOP_SCREENSHOT_BYTES = 4 * 1024 * 1024
 MAX_TIMEOUT_SECONDS = 3600.0
 EXECUTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _cancel_requested = False
@@ -356,6 +359,114 @@ def _dispatch(request: object) -> dict[str, Any]:
     return {"ok": True, "result": result}
 
 
+def _desktop_screenshot() -> dict[str, Any]:
+    """Capture only the fixed desktop display; this operation accepts no path or command."""
+    desktop = _desktop_account()
+    runtime = Path("/run/toothless-desktop")
+    authority = runtime / "Xauthority"
+    if not _desktop_runtime_ready(runtime, authority, desktop.pw_uid):
+        raise AgentError("worker_unavailable", "The protected desktop session is unavailable")
+    try:
+        main_pid_result = subprocess.run(
+            ["/usr/bin/systemctl", "show", "--property=MainPID", "--value", "toothless-desktop.service"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=False, close_fds=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgentError("worker_unavailable", "The graphical desktop session is unavailable") from exc
+    main_pid_text = main_pid_result.stdout.strip()
+    if main_pid_result.returncode != 0 or not main_pid_text.isdecimal() or int(main_pid_text) <= 1:
+        raise AgentError("worker_unavailable", "The graphical desktop session is unavailable")
+    descriptor, filename = tempfile.mkstemp(prefix="capture-", suffix=".png", dir=runtime)
+    os.close(descriptor)
+    path = Path(filename)
+    try:
+        os.chown(path, desktop.pw_uid, desktop.pw_gid)
+        os.chmod(path, 0o600)
+        result = subprocess.run(
+            ["/usr/bin/nsenter", "--target", main_pid_text, "--mount", "--",
+             "/usr/sbin/runuser", "-u", "toothless-desktop", "--", "/usr/bin/env",
+             "DISPLAY=:99", f"XAUTHORITY={authority}", "/usr/bin/scrot", "-o", "-q", "80", str(path)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=8, check=False, close_fds=True,
+            env={"PATH": "/usr/sbin:/usr/bin:/bin", "HOME": "/var/lib/toothless-desktop", "LANG": "C.UTF-8"},
+        )
+        if result.returncode != 0:
+            raise AgentError("worker_unavailable", "The graphical desktop could not be captured")
+        content = path.read_bytes()
+        if len(content) > MAX_DESKTOP_SCREENSHOT_BYTES:
+            raise AgentError("file_too_large", "Desktop screenshot exceeds the configured limit")
+        if (len(content) < 24 or content[:8] != b"\x89PNG\r\n\x1a\n" or content[12:16] != b"IHDR"
+                or int.from_bytes(content[16:20], "big") > 1280
+                or int.from_bytes(content[20:24], "big") > 800):
+            raise AgentError("backend_protocol_error", "Desktop screenshot format or dimensions are invalid")
+        return {"content_base64": base64.b64encode(content).decode("ascii")}
+    except subprocess.TimeoutExpired as exc:
+        raise AgentError("worker_unavailable", "Desktop screenshot capture timed out") from exc
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _desktop_status() -> dict[str, bool]:
+    try:
+        desktop = _desktop_account()
+    except AgentError:
+        return {"available": False}
+    runtime = Path("/run/toothless-desktop")
+    authority = runtime / "Xauthority"
+    try:
+        result = subprocess.run(
+            ["/usr/bin/systemctl", "is-active", "--quiet", "toothless-desktop.service"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=3, check=False, close_fds=True,
+        )
+    except subprocess.TimeoutExpired:
+        return {"available": False}
+    available = (
+        result.returncode == 0 and _desktop_runtime_ready(runtime, authority, desktop.pw_uid)
+        and Path("/usr/bin/scrot").is_file()
+        and Path("/usr/bin/nsenter").is_file()
+    )
+    return {"available": available}
+
+
+def _desktop_runtime_ready(runtime: Path, authority: Path, desktop_uid: int) -> bool:
+    """Allow only the broker group's exact runtime-directory ACL and private Xauthority."""
+    try:
+        browser_gid = grp.getgrnam("toothless-browser").gr_gid
+        runtime_info = runtime.lstat()
+        authority_info = authority.lstat()
+    except (KeyError, OSError):
+        return False
+    return (
+        stat.S_ISDIR(runtime_info.st_mode) and runtime_info.st_uid == desktop_uid
+        and runtime_info.st_gid == browser_gid and stat.S_IMODE(runtime_info.st_mode) == 0o750
+        and stat.S_ISREG(authority_info.st_mode) and authority_info.st_uid == desktop_uid
+        and stat.S_IMODE(authority_info.st_mode) == 0o600
+    )
+
+
+def _desktop_account() -> pwd.struct_passwd:
+    try:
+        return pwd.getpwnam("toothless-desktop")
+    except KeyError as exc:
+        raise AgentError("worker_unavailable", "The dedicated desktop identity is not installed") from exc
+
+
+def _desktop_control(operation: str) -> dict[str, bool]:
+    verb = "start" if operation == "start_desktop" else "stop"
+    try:
+        result = subprocess.run(
+            ["/usr/bin/systemctl", verb, "toothless-desktop.service"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=False, close_fds=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgentError("worker_unavailable", "The graphical desktop service did not respond") from exc
+    if result.returncode != 0:
+        raise AgentError("worker_unavailable", "The graphical desktop service could not change state")
+    return {"changed": True}
+
+
 def _capture_child(request: dict[str, Any], child: subprocess.Popen[bytes]) -> None:
     global _cancel_requested
     stdout_data = bytearray()
@@ -518,6 +629,24 @@ def main() -> int:
             raise AgentError("invalid_request", "Request must be a JSON object")
         request = cast(dict[str, Any], request)
         request_received = True
+        operation = request.get("operation")
+        if operation in {"desktop_screenshot", "desktop_status", "start_desktop", "stop_desktop"}:
+            if os.geteuid() != 0:
+                raise AgentError("invalid_request", "Desktop capture requires the protected helper")
+            if set(request) != {"operation"}:
+                raise AgentError("invalid_request", "Desktop request does not accept additional fields")
+            if operation == "desktop_screenshot":
+                result = _desktop_screenshot()
+            elif operation == "desktop_status":
+                result = _desktop_status()
+            else:
+                result = _desktop_control(str(operation))
+            response = {"ok": True, "result": result}
+            accepted = True
+            sys.stdout.write('{"accepted":true}\n')
+            sys.stdout.flush()
+            sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+            return 0
         account = pwd.getpwnam("admin")
         if os.geteuid() == 0:
             os.initgroups(account.pw_name, account.pw_gid)

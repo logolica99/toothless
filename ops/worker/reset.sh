@@ -14,4 +14,6 @@ tart stop "$WORKER_VM_NAME" 2>/dev/null || true
 tart delete "$WORKER_VM_NAME"
 tart clone "$WORKER_BASE_NAME" "$WORKER_VM_NAME"
 printf 'Worker reset complete. Start with ops/worker/start.sh, then run ops/worker/install-execution-agent.sh to restore the worker command helper.\n'
+printf 'To restore OpenCode, run ops/worker/install-opencode.sh and ops/worker/install-opencode-runner.sh as documented.\n'
+printf 'Guest OpenCode credentials are not restored by reset: run bash ops/worker/opencode-auth-login.sh and enter credentials only at the Ubuntu prompt. Never copy Mac credentials or seal guest credentials into the baseline.\n'
 

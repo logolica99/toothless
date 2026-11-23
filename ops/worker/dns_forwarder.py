@@ -36,6 +36,16 @@ RATE_BURST = 20.0
 RATE_PER_SECOND = 10.0
 ALLOWED_QUERY_FLAGS = dns.flags.RD | dns.flags.AD | dns.flags.CD
 BLOCKED_QUERY_TYPES = {dns.rdatatype.AXFR, dns.rdatatype.IXFR, dns.rdatatype.ANY}
+MAX_DIAGNOSTIC_EVENTS = 24
+_diagnostic_events = 0
+
+
+def _diagnostic(message: str) -> None:
+    global _diagnostic_events
+    if _diagnostic_events >= MAX_DIAGNOSTIC_EVENTS:
+        return
+    _diagnostic_events += 1
+    print(f"DNS-DIAG {message}", flush=True)
 
 
 class InvalidDNSQueryError(ValueError):
@@ -91,10 +101,14 @@ def validate_query(packet: bytes, *, tcp: bool = False) -> dns.message.Message:
 
     if query.edns >= 0:
         options = getattr(query, "options", ())
-        if query.edns != 0 or query.payload > MAX_UDP_QUERY_SIZE or any(
-            not isinstance(option, dns.edns.CookieOption) for option in options
-        ):
-            raise InvalidDNSQueryError("unsupported EDNS version, size, or options")
+        if query.edns != 0:
+            raise InvalidDNSQueryError("unsupported EDNS version")
+        if query.payload > MAX_UDP_QUERY_SIZE:
+            query.use_edns(edns=query.edns, ednsflags=query.ednsflags, payload=MAX_UDP_QUERY_SIZE, options=list(options))
+        unsupported_options = [option.otype for option in options if not isinstance(option, dns.edns.CookieOption)]
+        if unsupported_options:
+            codes = ",".join(str(int(code)) for code in unsupported_options[:8])
+            raise InvalidDNSQueryError(f"unsupported EDNS option codes: {codes}")
         if query.additional:
             raise InvalidDNSQueryError("only a single empty EDNS OPT record is accepted")
     elif query.additional:
@@ -218,8 +232,10 @@ class DNSForwarder:
 
     def _reserve_valid_query(self) -> bool:
         if self._active >= MAX_IN_FLIGHT:
+            _diagnostic("udp drop reason=concurrency_limit")
             return False
         if not self._limiter.take():
+            _diagnostic("udp drop reason=rate_limit")
             return False
         self._active += 1
         return True
@@ -246,12 +262,16 @@ class DNSForwarder:
                 return
             try:
                 response = validate_response(await asyncio.to_thread(forward_dot, packet, query), query)
-            except Exception:
+            except Exception as exc:
+                _diagnostic(f"tcp upstream error category={type(exc).__name__}")
                 response = dns.message.from_wire(_servfail(query))
+            else:
+                _diagnostic(f"tcp response rcode={response.rcode()}")
             wire = response.to_wire(max_size=MAX_RESPONSE_SIZE)
             writer.write(struct.pack("!H", len(wire)) + wire)
             await writer.drain()
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError, InvalidDNSQueryError, ValueError):
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, InvalidDNSQueryError, ValueError) as exc:
+            _diagnostic(f"tcp request rejected category={type(exc).__name__}")
             pass
         finally:
             if reserved:
@@ -267,7 +287,8 @@ class DNSForwarder:
             return
         try:
             query = validate_query(packet)
-        except InvalidDNSQueryError:
+        except InvalidDNSQueryError as exc:
+            _diagnostic(f"udp request rejected reason={exc}")
             return
         if not self._reserve_valid_query():
             return
@@ -283,8 +304,11 @@ class DNSForwarder:
         try:
             try:
                 response = validate_response(await asyncio.to_thread(forward_dot, packet, query), query)
-            except Exception:
+            except Exception as exc:
+                _diagnostic(f"udp upstream error category={type(exc).__name__}")
                 response = dns.message.from_wire(_servfail(query))
+            else:
+                _diagnostic(f"udp response rcode={response.rcode()}")
             transport.sendto(_udp_wire(response, query), peer)
         finally:
             self._active -= 1

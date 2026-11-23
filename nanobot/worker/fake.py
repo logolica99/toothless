@@ -36,10 +36,12 @@ class FakeWorkerBackend:
         command_plans: dict[str, FakeCommandPlan] | None = None,
         files: dict[str, bytes] | None = None,
         available: bool = True,
+        desktop_screenshot: bytes | None = None,
     ) -> None:
         self.command_plans = dict(command_plans or {})
         self.files = dict(files or {})
         self.available = available
+        self.desktop_screenshot = desktop_screenshot
         self.submitted_requests: list[ExecuteRequest] = []
         self.executions: dict[str, ExecutionSnapshot] = {}
         self._clock_ticks = 0
@@ -147,6 +149,22 @@ class FakeWorkerBackend:
         if path == "." or self._is_directory(path):
             return FileStat(path=path, kind=FileKind.DIRECTORY, size_bytes=0)
         raise WorkerOperationError(WorkerErrorCode.FILE_NOT_FOUND, "Path was not found")
+
+    async def capture_desktop_screenshot(self) -> bytes:
+        self._require_available()
+        if self.desktop_screenshot is None:
+            raise WorkerOperationError(WorkerErrorCode.WORKER_UNAVAILABLE, "Desktop session is unavailable")
+        return self.desktop_screenshot
+
+    async def desktop_available(self) -> bool:
+        self._require_available()
+        return self.desktop_screenshot is not None
+
+    async def desktop_control(self, operation: str) -> bool:
+        self._require_available()
+        if operation not in {"start_desktop", "stop_desktop"}:
+            raise WorkerOperationError(WorkerErrorCode.INVALID_REQUEST, "Unsupported desktop control")
+        return True
 
     def _is_directory(self, path: str) -> bool:
         prefix = f"{path}/"

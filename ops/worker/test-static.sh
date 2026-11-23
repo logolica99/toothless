@@ -22,5 +22,9 @@ grep -Fq 'tart stop "$WORKER_VM_NAME"' "$script_dir/stop.sh"
 grep -Fq 'StrictHostKeyChecking=yes' "$script_dir/install-opencode-runner.sh"
 grep -Fq 'IdentityAgent=none' "$script_dir/install-opencode-runner.sh"
 grep -Fq 'installed_hash' "$script_dir/install-opencode-runner.sh"
+grep -Fq 'StrictHostKeyChecking=yes' "$script_dir/shutdown.sh"
+grep -Fq 'IdentityAgent=none' "$script_dir/shutdown.sh"
+grep -Fq 'ForwardAgent=no' "$script_dir/shutdown.sh"
+grep -Fq 'UserKnownHostsFile=$known_hosts' "$script_dir/shutdown.sh"
 
 printf 'Static worker safety checks passed.\n'

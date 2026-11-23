@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,3 +65,40 @@ def test_worker_file_transfer_makes_opencode_workspace_file_readable(
     assert result["size_bytes"] == 4
     assert (opencode / "inputs/task-id/input.csv").read_bytes() == b"x\n1\n"
     assert stat.S_IMODE((opencode / "inputs/task-id/input.csv").stat().st_mode) == 0o644
+
+
+def test_desktop_operations_fail_closed_when_dedicated_identity_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_user(_name: str) -> object:
+        raise KeyError("toothless-desktop")
+
+    monkeypatch.setattr(guest.pwd, "getpwnam", missing_user)
+
+    assert guest._desktop_status() == {"available": False}
+    with pytest.raises(guest.AgentError, match="identity is not installed"):
+        guest._desktop_screenshot()
+
+
+def test_desktop_runtime_accepts_only_browser_group_directory_and_private_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "toothless-desktop"
+    runtime.mkdir(mode=0o750)
+    runtime.chmod(0o750)
+    authority = runtime / "Xauthority"
+    authority.write_text("test", encoding="utf-8")
+    authority.chmod(0o600)
+    browser_gid = os.getgid()
+    monkeypatch.setattr(guest.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=browser_gid))
+
+    assert guest._desktop_runtime_ready(runtime, authority, os.getuid())
+
+    runtime.chmod(0o751)
+    assert not guest._desktop_runtime_ready(runtime, authority, os.getuid())
+    runtime.chmod(0o750)
+    authority.chmod(0o640)
+    assert not guest._desktop_runtime_ready(runtime, authority, os.getuid())
+    authority.unlink()
+    authority.symlink_to(tmp_path / "missing-authority")
+    assert not guest._desktop_runtime_ready(runtime, authority, os.getuid())

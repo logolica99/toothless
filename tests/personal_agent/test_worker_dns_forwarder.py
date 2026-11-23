@@ -20,6 +20,12 @@ def test_valid_standard_and_empty_edns_queries_are_accepted() -> None:
     edns_query = dns.message.make_query("example.com", "A", use_edns=0, payload=1232)
     assert validate_query(edns_query.to_wire()).question == edns_query.question
 
+    large_edns_query = dns.message.make_query("example.com", "A", use_edns=0, payload=4096)
+    large_edns_query.use_edns(edns=0, ednsflags=dns.flags.DO, payload=4096)
+    bounded_query = validate_query(large_edns_query.to_wire())
+    assert bounded_query.payload == 1232
+    assert bounded_query.ednsflags == dns.flags.DO
+
     cookie_query = dns.message.make_query("example.com", "A", use_edns=0, payload=1232)
     cookie_query.use_edns(edns=0, payload=1232, options=[dns.edns.CookieOption(b"12345678", b"")])
     assert validate_query(cookie_query.to_wire()).question == cookie_query.question
@@ -63,7 +69,7 @@ def test_unapproved_edns_options_are_rejected() -> None:
     query = dns.message.make_query("example.com", "A", use_edns=0, payload=1232)
     query.use_edns(edns=0, payload=1232, options=[dns.edns.GenericOption(12, b"\x00")])
 
-    with pytest.raises(InvalidDNSQueryError, match="unsupported EDNS"):
+    with pytest.raises(InvalidDNSQueryError, match="unsupported EDNS option codes: 12"):
         validate_query(query.to_wire())
 
 

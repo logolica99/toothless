@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 REMOTE_HELPER = "sudo -n /usr/local/libexec/toothless/worker-agent"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
-MAX_WIRE_RESPONSE_BYTES = (DEFAULT_MAX_FILE_BYTES * 4 // 3) + 128 * 1024
+MAX_WIRE_RESPONSE_BYTES = (4 * 1024 * 1024 * 4 // 3) + 128 * 1024
 MAX_SSH_STDERR_BYTES = 64 * 1024
 _USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
@@ -121,6 +121,33 @@ class SSHWorkerBackend:
     async def stat_file(self, path: str) -> FileStat:
         response = await self._request({"operation": "stat_file", "path": path})
         return _file_stat(response)
+
+    async def capture_desktop_screenshot(self) -> bytes:
+        response = await self._request({"operation": "desktop_screenshot"})
+        content = _string(response, "content_base64")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except ValueError as exc:
+            raise _protocol_error("Worker returned invalid desktop image encoding") from exc
+        if len(data) > 4 * 1024 * 1024:
+            raise _protocol_error("Worker desktop image exceeded the configured limit")
+        return data
+
+    async def desktop_available(self) -> bool:
+        response = await self._request({"operation": "desktop_status"})
+        value = response.get("available")
+        if not isinstance(value, bool):
+            raise _protocol_error("Worker returned invalid desktop readiness")
+        return value
+
+    async def desktop_control(self, operation: str) -> bool:
+        if operation not in {"start_desktop", "stop_desktop"}:
+            raise WorkerOperationError(WorkerErrorCode.INVALID_REQUEST, "Unsupported desktop control")
+        response = await self._request({"operation": operation})
+        value = response.get("changed")
+        if not isinstance(value, bool):
+            raise _protocol_error("Worker returned invalid desktop control status")
+        return value
 
     async def _request(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ from nanobot.worker.interface import (
     WorkerInterface,
     WorkerOperationError,
     WorkerUnavailableError,
+)
+
+_ONE_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/n5sAAAAASUVORK5CYII="
 )
 
 
@@ -178,4 +183,26 @@ async def test_binary_file_operations_use_only_fake_worker_storage() -> None:
     assert entry.size_bytes == len(content)
     assert root.kind is FileKind.DIRECTORY
     assert file_stat.size_bytes == len(content)
+
+
+@pytest.mark.asyncio
+async def test_desktop_screenshot_is_bounded_png_over_the_worker_backend() -> None:
+    worker = WorkerInterface(FakeWorkerBackend(desktop_screenshot=_ONE_PIXEL_PNG))
+
+    assert await worker.desktop_available()
+    assert await worker.capture_desktop_screenshot() == _ONE_PIXEL_PNG
+    assert await worker.start_desktop()
+    assert await worker.stop_desktop()
+
+    with pytest.raises(WorkerOperationError) as invalid:
+        await WorkerInterface(FakeWorkerBackend(desktop_screenshot=b"not an image")).capture_desktop_screenshot()
+    assert invalid.value.code is WorkerErrorCode.BACKEND_PROTOCOL_ERROR
+
+
+@pytest.mark.asyncio
+async def test_desktop_capture_never_falls_back_when_worker_is_unavailable() -> None:
+    worker = WorkerInterface(FakeWorkerBackend(available=False))
+
+    with pytest.raises(WorkerUnavailableError):
+        await worker.capture_desktop_screenshot()
 

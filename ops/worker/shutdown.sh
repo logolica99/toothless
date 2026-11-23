@@ -12,7 +12,24 @@ private_key="${1:-$HOME/.ssh/id_ed25519}"
 }
 
 worker_ip="$(tart ip "$WORKER_VM_NAME")"
-ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$private_key" "admin@$worker_ip" "sudo sync; sudo systemctl poweroff" || true
+guest_host_key="$(tart exec "$WORKER_VM_NAME" sudo -n cat /etc/ssh/ssh_host_ed25519_key.pub)"
+[[ "$guest_host_key" == ssh-ed25519\ * ]] || {
+  printf 'Could not obtain the guest SSH host key from the trusted Tart guest agent.\n' >&2
+  exit 1
+}
+known_hosts="$(mktemp "${TMPDIR:-/tmp}/toothless-shutdown-known-hosts.XXXXXX")"
+trap 'rm -f "$known_hosts"' EXIT
+printf '%s %s\n' "$worker_ip" "$guest_host_key" > "$known_hosts"
+chmod 600 "$known_hosts"
+ssh_options=(
+  -F /dev/null -T -i "$private_key"
+  -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no
+  -o ClearAllForwardings=yes -o BatchMode=yes -o PasswordAuthentication=no
+  -o KbdInteractiveAuthentication=no -o PreferredAuthentications=publickey
+  -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null
+  -o "UserKnownHostsFile=$known_hosts" -o ProxyCommand=none -o ProxyJump=none
+)
+ssh "${ssh_options[@]}" "admin@$worker_ip" 'sudo -n sync && sudo -n systemctl poweroff'
 
 for _ in {1..30}; do
   state="$(tart get "$WORKER_VM_NAME" | awk 'NR == 2 {print $NF}')"

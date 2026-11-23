@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en" data-carbon-theme="g100">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="toothless-base-path" content="__BASE_PATH__">
+  <title>Toothless · Private Console</title>
+  <link rel="stylesheet" href="__BASE_PATH__/assets/carbon.css">
+  <link rel="stylesheet" href="__BASE_PATH__/assets/web_console.css">
+</head>
+<body>
+  <header class="cds--header">
+    <a class="cds--header__name" href="__BASE_PATH__/" aria-label="Toothless Home"><span class="cds--brand-mark" aria-hidden="true">T</span><span>Toothless <span class="cds--header__name--prefix">/ Private console</span></span></a>
+    <nav class="cds--header-nav" aria-label="Primary navigation">
+      <a class="cds--header-nav__item" href="__BASE_PATH__/">Memory</a>
+      <a class="cds--header-nav__item cds--header-nav__item--active" href="__BASE_PATH__/app/">Console</a>
+    </nav>
+    <div class="cds--header-actions"><span class="cds--status-tag"><span aria-hidden="true"></span>Private to your account</span></div>
+  </header>
+
+  <section id="login" class="cds--page auth-layout" aria-labelledby="login-title">
+    <div class="auth-intro">
+      <p class="cds--eyebrow">TOOTHLESS · MAC-HOSTED</p>
+      <h1 id="login-title">Your private workspace.</h1>
+      <p>Manage project context and saved conversation notes. Agent execution is not available from this console.</p>
+      <div class="auth-boundary"><strong>Owner-only access</strong><span>Passwords are verified by the Mac controller. Conversation data is stored in the configured Supabase project.</span></div>
+    </div>
+    <div class="cds--panel auth-panel">
+      <p class="cds--eyebrow">SIGN IN</p>
+      <h2>Continue to Toothless</h2>
+      <form id="password-login-form" class="cds--form">
+        <label class="cds--label" for="username">Username</label>
+        <input class="cds--text-input" id="username" maxlength="64" autocomplete="username" required>
+        <label class="cds--label" for="password">Password</label>
+        <input class="cds--text-input" id="password" type="password" maxlength="1024" autocomplete="current-password" required>
+        <button class="cds--button cds--button--primary" type="submit">Sign in</button>
+        <p id="password-login-error" class="cds--inline-error" role="alert"></p>
+      </form>
+      <a id="setup-link" class="setup-link" href="__BASE_PATH__/app/setup">First-time administrator setup</a>
+      <details class="fallback-signin">
+        <summary>Use one-time Telegram sign-in</summary>
+        <form id="login-form" class="cds--form">
+          <label class="cds--label" for="code">One-time code from your private Toothless chat</label>
+          <input class="cds--text-input" id="code" type="password" maxlength="128" autocomplete="one-time-code" required>
+          <button class="cds--button cds--button--secondary" type="submit">Continue with Telegram</button>
+          <p id="login-error" class="cds--inline-error" role="alert"></p>
+        </form>
+      </details>
+      <p class="auth-footnote">A one-time owner check is only needed for first-time setup or fallback access.</p>
+    </div>
+  </section>
+
+  <main id="console" class="console hidden">
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <div class="sidebar-brand"><span class="cds--brand-mark" aria-hidden="true">T</span><span>Workspace<small>PRIVATE CONSOLE</small></span></div>
+      <button id="new-chat" class="cds--button cds--button--primary new-chat">New conversation</button>
+      <p class="sidebar-label">WORKSPACE</p>
+      <button class="nav-item active" type="button">Conversations</button>
+      <button id="projects-button" class="nav-item" type="button">Projects</button>
+      <div id="projects-list" class="project-list hidden"></div>
+      <button id="new-project" class="project-add hidden" type="button">Create project</button>
+      <p class="sidebar-label">RECENT CONVERSATIONS</p>
+      <div id="history" class="history" aria-label="Recent conversations"></div>
+      <div class="sidebar-bottom">
+        <span class="session-status"><i aria-hidden="true"></i>Owner session active</span>
+        <button id="security-button" type="button">Security</button>
+        <button id="logout-all" type="button">Log out all</button>
+        <button id="logout" type="button">Log out</button>
+      </div>
+    </aside>
+    <section class="main">
+      <header class="workspace-header"><div><p class="cds--eyebrow">TOOTHLESS · WORKSPACE</p><h2 id="chat-title">New conversation</h2></div><span id="connection-pill" class="cds--connection-tag">Checking storage…</span></header>
+      <div id="storage-gate" class="gate hidden">
+        <p class="cds--eyebrow">PERSISTENT MEMORY</p>
+        <h1>Connect your project database</h1>
+        <p class="gate-description">Conversation records are stored in Supabase PostgreSQL. The connection is made only by this Mac controller. Use the restricted <code>toothless_runtime</code> login after the reviewed migrations are applied. Do not use a service-role key or administrator credential.</p>
+        <p class="gate-description">The DSN is stored in <code>~/.config/toothless/web-console.env</code> with owner-only permissions; it is not sent to the browser or Ubuntu worker.</p>
+        <label class="cds--label" for="dsn">Runtime PostgreSQL connection string</label>
+        <input class="cds--text-input" id="dsn" type="password" autocomplete="off" spellcheck="false" placeholder="postgresql://toothless_runtime:…@db.…supabase.co:5432/postgres">
+        <div class="gate-actions"><button id="connect" class="cds--button cds--button--primary" type="button">Verify and store on this Mac</button><button id="migrate-keychain" class="cds--button cds--button--secondary" type="button">Migrate old Keychain connection</button></div>
+        <p id="connect-message" class="cds--status-line" role="status"></p>
+        <details class="setup-details"><summary>Database setup and current limits</summary><p>Apply <code>ops/supabase/migrations/0001_toothless_web.sql</code> then <code>0002_toothless_web_auth.sql</code> in the intended Supabase project. Create a dedicated non-superuser login with no RLS bypass and membership in <code>toothless_web</code>. The controller verifies the schema before storing the DSN.</p><p>Conversation persistence is separate from execution. Automatic dispatch, approvals, event streaming, and resume remain disabled; nothing starts from this page.</p></details>
+      </div>
+      <div id="chat" class="chat hidden">
+        <div id="messages" class="messages"><div class="welcome"><div class="welcome-mark" aria-hidden="true">T</div><p class="cds--eyebrow">CONVERSATION NOTES</p><h1>A clear place to think.</h1><p>Choose a project or start a new conversation.</p><span>Agent execution is currently disabled.</span></div></div>
+        <form id="composer" class="composer"><textarea class="cds--textarea" id="message" rows="1" maxlength="8000" placeholder="Messages are saved as notes; agent runs are disabled." disabled></textarea><button class="cds--button cds--button--primary" type="submit" disabled aria-label="Save message">Save note</button></form>
+        <p class="disclaimer">Sending saves a conversation note. It never starts a worker run.</p>
+      </div>
+      <footer class="main-footer"><span>Mac-hosted controller</span><span class="footer-separator">·</span><span>Private tailnet access</span></footer>
+    </section>
+  </main>
+
+  <dialog id="security-dialog" class="cds--dialog">
+    <form id="password-form" class="cds--panel dialog-panel">
+      <p class="cds--eyebrow">ACCOUNT SECURITY</p><h2>Change password</h2>
+      <label class="cds--label" for="current-password">Current password</label><input class="cds--text-input" id="current-password" type="password" autocomplete="current-password" required>
+      <label class="cds--label" for="new-password">New password (12–1024 characters)</label><input class="cds--text-input" id="new-password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required>
+      <p id="security-message" class="cds--status-line" role="status"></p>
+      <div class="gate-actions"><button class="cds--button cds--button--primary" type="submit">Update password</button><button id="close-security" class="cds--button cds--button--secondary" type="button">Close</button></div>
+    </form>
+  </dialog>
+  <script src="__BASE_PATH__/assets/web_console.js" defer></script>
+</body>
+</html>

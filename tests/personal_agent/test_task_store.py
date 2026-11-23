@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,13 @@ from nanobot.personal_agent.task_store import TaskStatus, TaskStore, validate_ta
 def test_task_creation_is_durable_and_idempotent_by_telegram_update(tmp_path: Path) -> None:
     database = tmp_path / "tasks.sqlite3"
     first = TaskStore(database)
-    task, created = first.create_from_update(71, "Research open-source coding agents")
+    task, created = first.create_from_update(
+        71, "Research open-source coding agents", memory_context="Project: Aster\nfact [memory-abc]: Uses FEM"
+    )
     assert created is True
     assert task.status is TaskStatus.QUEUED
     assert task.request == "Research open-source coding agents"
+    assert "Uses FEM" in task.memory_context
     assert task.progress == "AI execution has not started."
     assert task.error is None
     assert task.execution_ids == ()
@@ -23,12 +27,89 @@ def test_task_creation_is_durable_and_idempotent_by_telegram_update(tmp_path: Pa
     assert duplicate.task_id == task.task_id
     assert duplicate.request == task.request
     assert first.list_latest() == (task,)
-
     restarted = TaskStore(database)
     recovered = restarted.get(task.task_id)
     assert recovered == task
     assert [event.event_type for event in restarted.events(task.task_id)] == ["created"]
 
+
+def test_scheduled_task_and_dispatch_intent_are_idempotently_linked_to_occurrence(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    occurrence_id = "occ-0123456789abcdef01234567"
+    task, created = store.create_scheduled_task(occurrence_id, "Research a public website")
+    duplicate, created_again = store.create_scheduled_task(occurrence_id, "Changed duplicate request")
+    assert created and not created_again
+    assert duplicate.task_id == task.task_id
+    assert duplicate.request == task.request
+    claimed, dispatched = store.claim_for_dispatch(
+        task.task_id, "opencode-scheduled-1",
+        authorization_reason="Owner-approved schedule schedule-0123456789abcdef01234567 "
+        "occurrence occ-0123456789abcdef01234567",
+    )
+    assert dispatched and claimed is not None and claimed.status is TaskStatus.DISPATCHING
+    assert claimed.execution_ids == ("opencode-scheduled-1",)
+    assert "Owner-approved schedule" in store.events(task.task_id)[-1].detail
+    existing, repeated_dispatch = store.claim_for_dispatch(
+        task.task_id, "opencode-scheduled-2", authorization_reason="Owner-approved schedule repeat"
+    )
+    assert not repeated_dispatch and existing is not None
+    assert existing.execution_ids == ("opencode-scheduled-1",)
+
+
+def test_execution_diagnostics_are_stored_as_a_bounded_task_event(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = store.create_from_update(70, "Diagnose retries")
+    store.claim_for_dispatch(task.task_id, "opencode-diagnostics")
+    store.mark_worker_accepted("opencode-diagnostics")
+    diagnostics = json.dumps({"event_count": 1, "retry_count": 1, "timeline": [
+        {"sequence": 1, "type": "retry", "activity": "retry", "error_category": "rate_limit"},
+    ]})
+
+    store.finish_execution(
+        "opencode-diagnostics", TaskStatus.FAILED, error="timed_out", diagnostics=diagnostics
+    )
+
+    event = next(item for item in store.events(task.task_id) if item.event_type == "execution_diagnostics")
+    assert json.loads(event.detail) == json.loads(diagnostics)
+
+
+def test_observed_sources_are_distinct_from_answer_reported_urls_and_survive_migration(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.sqlite3"
+    store = TaskStore(path)
+    task, _ = store.create_from_update(701, "Research public navigation")
+    execution_id = "opencode-" + "7" * 32
+    store.claim_for_dispatch(task.task_id, execution_id)
+    store.mark_worker_accepted(execution_id)
+    store.finish_execution(execution_id, TaskStatus.SUCCEEDED, result="A model mentioned https://guess.example/")
+    store.record_sources(task.task_id, (("Model mentioned", "https://guess.example/"),))
+    store.record_observed_sources(task.task_id, (("Blogs · AI", "https://blogs.example.com/tags/ai", "AI", 200, "observed"),))
+
+    sources = store.sources(task.task_id)
+    assert {(item.url, item.verification_status) for item in sources} == {
+        ("https://guess.example/", "reported"),
+        ("https://blogs.example.com/tags/ai", "observed"),
+    }
+    assert next(item for item in sources if item.verification_status == "observed").label == "AI"
+
+    # Recreate the schema shape used before observed-source metadata was added.
+    with store._connect() as connection:
+        connection.execute("ALTER TABLE task_sources DROP COLUMN http_status")
+        connection.execute("ALTER TABLE task_sources DROP COLUMN verification_status")
+        connection.execute("ALTER TABLE task_sources DROP COLUMN label")
+    migrated = TaskStore(path)
+    restored = migrated.sources(task.task_id)
+    assert len(restored) == 2
+    assert all(item.verification_status == "reported" for item in restored)
+
+
+def test_execution_diagnostics_reject_invalid_or_oversized_json(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    task, _ = store.create_from_update(69, "Diagnose retries")
+    store.claim_for_dispatch(task.task_id, "opencode-invalid-diagnostics")
+    with pytest.raises(ValueError, match="JSON"):
+        store.finish_execution("opencode-invalid-diagnostics", TaskStatus.FAILED, diagnostics="not-json")
+    with pytest.raises(ValueError, match="limit"):
+        store.finish_execution("opencode-invalid-diagnostics", TaskStatus.FAILED, diagnostics=" " * 8193)
 
 def test_task_lifecycle_updates_instructions_and_execution_links(tmp_path: Path) -> None:
     store = TaskStore(tmp_path / "tasks.sqlite3")
@@ -218,3 +299,68 @@ def test_task_progress_is_persisted_only_while_running(tmp_path: Path) -> None:
     assert updated is not None and updated.progress == "Still running on Ubuntu (1 minute elapsed)."
     store.finish_execution("opencode-progress-1", TaskStatus.FAILED, error="timed_out: stop")
     assert not store.record_progress(task.task_id, "late progress")
+
+
+def test_continuation_inherits_files_and_requires_single_reply_bound_approval(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    parent, _ = store.create_from_update(107, "Analyze this CSV")
+    store.add_attachment(
+        parent.task_id, telegram_file_id="file-parent", filename="values.csv", mime_type="text/csv",
+        size_bytes=12, storage_key="opaque-original", caption="Calculate mean",
+    )
+    store.record_artifact(
+        parent.task_id, guest_path=f"opencode-task-workspace/exports/{parent.task_id}/chart.png",
+        filename="chart.png", mime_type="image/png", size_bytes=64, storage_key="opaque-chart",
+    )
+    child, created = store.create_from_update(
+        108, "What's the mean?", parent_task_id=parent.task_id,
+        parent_context="Parent original request is historical context only; saved result (untrusted): mean 6",
+        inherit_parent_files=True,
+    )
+    assert created and child.parent_task_id == parent.task_id
+    assert child.request == "What's the mean?"
+    assert child.instructions == ""
+    assert child.parent_context == "Parent original request is historical context only; saved result (untrusted): mean 6"
+    assert {item.filename for item in child.attachments} == {"values.csv", "previous-chart.png"}
+    assert {item.storage_key for item in child.attachments} == {"opaque-original", "opaque-chart"}
+
+    store.create_pending_approval(child.task_id, 42)
+    store.bind_approval_prompt(child.task_id, 42, 9001)
+    assert store.consume_reply_approval(7, 9001) == (None, "missing")
+    assert store.consume_reply_approval(42, 9002) == (None, "missing")
+    approved_id, state = store.consume_reply_approval(42, 9001)
+    assert approved_id == child.task_id and state == "approved"
+    assert store.consume_reply_approval(42, 9001) == (None, "used")
+    store.bind_message_context(42, 9010, child.task_id)
+    assert store.current_context_task(42) == child.task_id
+    assert store.task_for_message(42, 9010) == child.task_id
+
+    reopened = TaskStore(tmp_path / "tasks.sqlite3")
+    recovered = reopened.get(child.task_id)
+    assert recovered is not None and recovered.parent_task_id == parent.task_id
+    assert len(recovered.attachments) == 2
+
+
+def test_changed_pending_task_action_cannot_be_approved(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    parent, _ = store.create_from_update(109, "Make a CSV chart")
+    child, _ = store.create_from_update(
+        110, parent.request, parent_task_id=parent.task_id,
+        instructions="Use logarithmic scale.",
+    )
+    store.create_pending_approval(child.task_id, 42)
+    store.bind_approval_prompt(child.task_id, 42, 9011)
+    store.append_instruction(child.task_id, "Also change the color to blue.")
+    assert store.consume_reply_approval(42, 9011) == (None, "changed")
+    assert store.get(child.task_id).status is TaskStatus.QUEUED
+
+
+def test_declining_exact_pending_approval_cancels_without_execution(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks.sqlite3")
+    parent, _ = store.create_from_update(111, "Create a chart")
+    child, _ = store.create_from_update(112, parent.request, parent_task_id=parent.task_id, instructions="Make it blue")
+    store.create_pending_approval(child.task_id, 42)
+    store.bind_approval_prompt(child.task_id, 42, 9012)
+    assert store.decline_reply_approval(42, 9012) == (child.task_id, "declined")
+    assert store.get(child.task_id).status is TaskStatus.CANCELLED
+    assert store.consume_reply_approval(42, 9012) == (None, "used")
