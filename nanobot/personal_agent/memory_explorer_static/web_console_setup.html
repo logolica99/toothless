@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-carbon-theme="g100">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="toothless-base-path" content="__BASE_PATH__">
+  <title>Toothless · First-time setup</title>
+  <link rel="stylesheet" href="__BASE_PATH__/assets/carbon.css">
+  <link rel="stylesheet" href="__BASE_PATH__/assets/web_console.css">
+</head>
+<body>
+  <header class="cds--header">
+    <a class="cds--header__name" href="__BASE_PATH__/app/" aria-label="Toothless sign in"><span class="cds--brand-mark" aria-hidden="true">T</span><span>Toothless <span class="cds--header__name--prefix">/ Account setup</span></span></a>
+    <div class="cds--header-actions"><span class="cds--status-tag"><span aria-hidden="true"></span>First-time setup</span></div>
+  </header>
+  <main class="cds--page auth-layout setup-layout">
+    <div class="auth-intro">
+      <p class="cds--eyebrow">OWNER-VERIFIED ACCOUNT</p>
+      <h1>Create your website login.</h1>
+      <p>This account is for the Toothless website only. It does not grant macOS or Ubuntu administrator privileges.</p>
+      <div class="auth-boundary"><strong>Why the one-time code?</strong><span>It verifies the owner Telegram account for the initial setup. Your website username and password are used for future sign-ins.</span></div>
+    </div>
+    <section class="cds--panel auth-panel" aria-labelledby="setup-title">
+      <p class="cds--eyebrow">INITIAL ADMINISTRATOR</p>
+      <h2 id="setup-title">Set up your login</h2>
+      <form id="setup-form" class="cds--form">
+        <label class="cds--label" for="setup-code">One-time code from your private Toothless chat</label>
+        <input class="cds--text-input" id="setup-code" type="password" maxlength="128" autocomplete="one-time-code" required>
+        <label class="cds--label" for="setup-username">Website username</label>
+        <input class="cds--text-input" id="setup-username" maxlength="64" autocomplete="username" required>
+        <label class="cds--label" for="setup-password">Password (12–1024 characters)</label>
+        <input class="cds--text-input" id="setup-password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required>
+        <button class="cds--button cds--button--primary" type="submit">Create website login</button>
+        <p id="setup-error" class="cds--inline-error" role="alert"></p>
+      </form>
+      <a class="setup-link" href="__BASE_PATH__/app/">Return to sign in</a>
+    </section>
+  </main>
+  <script src="__BASE_PATH__/assets/web_console_setup.js" defer></script>
+</body>
+</html>

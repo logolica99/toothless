@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from nanobot.worker.execution_store import ExecutionRecord, SqliteExecutionStore
@@ -20,6 +20,7 @@ MAX_COMMAND_BYTES = 32 * 1024
 MAX_PATH_BYTES = 4096
 DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 DEFAULT_MAX_FILE_BYTES = 1024 * 1024
+MAX_DESKTOP_SCREENSHOT_BYTES = 4 * 1024 * 1024
 _EXECUTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -129,6 +130,12 @@ class WorkerBackend(Protocol):
     async def list_files(self, path: str) -> tuple[FileEntry, ...]: ...
 
     async def stat_file(self, path: str) -> FileStat: ...
+
+    async def capture_desktop_screenshot(self) -> bytes: ...
+
+    async def desktop_available(self) -> bool: ...
+
+    async def desktop_control(self, operation: str) -> bool: ...
 
 
 class WorkerInterface:
@@ -298,6 +305,39 @@ class WorkerInterface:
         normalized = _relative_path(path, allow_dot=True)
         return await self._backend.stat_file(normalized)
 
+    async def capture_desktop_screenshot(self) -> bytes:
+        """Request one fixed-display image through the authenticated worker helper."""
+        content_value = cast(object, await self._backend.capture_desktop_screenshot())
+        if not isinstance(content_value, bytes) or len(content_value) > MAX_DESKTOP_SCREENSHOT_BYTES:
+            raise WorkerOperationError(
+                WorkerErrorCode.BACKEND_PROTOCOL_ERROR,
+                "Desktop screenshot exceeded the configured size limit",
+            )
+        _validate_desktop_png(content_value)
+        return content_value
+
+    async def desktop_available(self) -> bool:
+        available = cast(object, await self._backend.desktop_available())
+        if not isinstance(available, bool):
+            raise WorkerOperationError(
+                WorkerErrorCode.BACKEND_PROTOCOL_ERROR, "Worker returned invalid desktop readiness"
+            )
+        return available
+
+    async def start_desktop(self) -> bool:
+        return await self._desktop_control("start_desktop")
+
+    async def stop_desktop(self) -> bool:
+        return await self._desktop_control("stop_desktop")
+
+    async def _desktop_control(self, operation: str) -> bool:
+        result: object = await self._backend.desktop_control(operation)
+        if result is not True:
+            raise WorkerOperationError(
+                WorkerErrorCode.BACKEND_PROTOCOL_ERROR, "Worker did not confirm the desktop state change"
+            )
+        return True
+
     def _bounded_snapshot(
         self,
         result: object,
@@ -377,6 +417,19 @@ def _size_limit(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return value
+
+
+def _validate_desktop_png(content: bytes) -> None:
+    if len(content) < 24 or content[:8] != b"\x89PNG\r\n\x1a\n" or content[12:16] != b"IHDR":
+        raise WorkerOperationError(
+            WorkerErrorCode.BACKEND_PROTOCOL_ERROR, "Worker returned an invalid desktop image"
+        )
+    width = int.from_bytes(content[16:20], "big")
+    height = int.from_bytes(content[20:24], "big")
+    if not (1 <= width <= 1280 and 1 <= height <= 800):
+        raise WorkerOperationError(
+            WorkerErrorCode.BACKEND_PROTOCOL_ERROR, "Desktop image dimensions exceed the configured limit"
+        )
 
 
 def _invalid(message: str) -> WorkerOperationError:

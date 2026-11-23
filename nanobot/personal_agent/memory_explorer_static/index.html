@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en" data-carbon-theme="g100">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="toothless-base-path" content="__BASE_PATH__">
+  <meta name="referrer" content="no-referrer">
+  <title>Toothless · Memory Explorer</title>
+  <link rel="stylesheet" href="__BASE_PATH__/assets/carbon.css">
+  <link rel="stylesheet" href="__BASE_PATH__/assets/app.css">
+</head>
+<body>
+  <header class="cds--header">
+    <a class="cds--header__name" href="__BASE_PATH__/" aria-label="Toothless Memory Explorer">
+      <span class="cds--brand-mark" aria-hidden="true">T</span>
+      <span>Toothless <span class="cds--header__name--prefix">/ Memory Explorer</span></span>
+    </a>
+    <nav class="cds--header-nav" aria-label="Primary navigation">
+      <a class="cds--header-nav__item cds--header-nav__item--active" href="__BASE_PATH__/">Memory</a>
+      <a class="cds--header-nav__item" href="__BASE_PATH__/app/">Console</a>
+    </nav>
+    <div class="cds--header-actions">
+      <span class="cds--status-tag"><span aria-hidden="true"></span>Private session</span>
+      <button id="refresh" class="cds--icon-button hidden" title="Refresh graph" aria-label="Refresh graph">↻</button>
+      <button id="logout" class="cds--header-logout hidden" title="End this session">Log out</button>
+    </div>
+  </header>
+
+  <main class="cds--page">
+    <section id="login" class="login-layout" aria-labelledby="login-title">
+      <div class="login-intro">
+        <p class="cds--eyebrow">PRIVATE KNOWLEDGE GRAPH</p>
+        <h1 id="login-title">Project context,<br>connected.</h1>
+        <p class="login-description">Search owner-approved memories, decisions, tasks, and files. Select a record to inspect its provenance and relationships.</p>
+        <div class="security-note">
+          <span class="security-note__icon" aria-hidden="true">i</span>
+          <p><strong>Read-only access</strong><br>Graph data stays on the Mac Mini. This view cannot run tasks or change trusted memory.</p>
+        </div>
+      </div>
+      <form id="login-form" class="cds--panel login-form">
+        <div class="cds--panel__heading"><p class="cds--eyebrow">OWNER AUTHORIZATION</p><h2>Open Memory Explorer</h2></div>
+        <label class="cds--label" for="token">One-time code from your private Toothless chat</label>
+        <input class="cds--text-input" id="token" type="password" autocomplete="one-time-code" required placeholder="Enter one-time code">
+        <button class="cds--button cds--button--primary" type="submit">Continue to memory graph</button>
+        <div id="login-error" class="cds--inline-error" role="alert"></div>
+      </form>
+    </section>
+
+    <section id="explorer" class="explorer hidden" aria-label="Memory graph explorer">
+      <div class="page-heading">
+        <div><p class="cds--eyebrow">OWNER-APPROVED CONTEXT</p><h1>Memory Explorer</h1><p>Search project context, inspect sources, and follow connections between tasks and files.</p></div>
+        <div id="node-count" class="cds--record-count"><span>0</span><span>records</span></div>
+      </div>
+
+      <section class="cds--toolbar" aria-label="Graph search and filters">
+        <label class="cds--field cds--search-field" for="search"><span class="cds--label">Search records</span><input class="cds--text-input" id="search" type="search" placeholder="Projects, tasks, memories, files" aria-label="Search graph"></label>
+        <label class="cds--field" for="project-filter"><span class="cds--label">Project</span><select class="cds--select" id="project-filter" aria-label="Filter by project"><option value="">All projects</option></select></label>
+        <label class="cds--field" for="type-filter"><span class="cds--label">Record type</span><select class="cds--select" id="type-filter" aria-label="Filter by record type"><option value="">All records</option><option value="project">Projects</option><option value="task">Tasks</option><option value="memory">Memories</option><option value="file">Files</option><option value="artifact">Artifacts</option></select></label>
+        <button id="search-button" class="cds--button cds--button--primary search-button">Search</button>
+      </section>
+
+      <div class="workspace">
+        <section class="graph-card cds--layer-01" aria-label="Interactive knowledge graph">
+          <div class="graph-heading">
+            <div><h2>Connected records</h2><p id="graph-hint">Select a node to inspect its source and links.</p></div>
+            <div class="graph-actions"><button id="expand" class="cds--button cds--button--secondary" disabled>Expand selection</button><button id="fit" class="cds--button cds--button--tertiary" title="Fit graph">Fit graph</button></div>
+          </div>
+          <div class="legend" aria-label="Record types"><span><i class="dot project"></i>Project</span><span><i class="dot task"></i>Task</span><span><i class="dot memory"></i>Memory</span><span><i class="dot file"></i>File or artifact</span></div>
+          <div id="graph" role="img" aria-label="Interactive project memory graph"></div>
+          <div id="empty" class="cds--empty-state hidden"><strong>No matching records</strong><p>Try another phrase or clear the project filter.</p></div>
+          <div class="graph-footer"><span id="source-count">Local records only</span><span>Drag · zoom · pan</span></div>
+        </section>
+        <aside id="inspector" class="inspector cds--layer-01" aria-label="Record details">
+          <div class="inspector-empty"><div class="inspector-icon" aria-hidden="true">⌕</div><p class="cds--eyebrow">RECORD DETAILS</p><h2>Select a record</h2><p>Inspect its source, history, and connected records.</p></div>
+          <div id="inspector-content" class="hidden"></div>
+          <div id="record-list" aria-label="Records in the current graph"></div>
+        </aside>
+      </div>
+      <footer class="explorer-footer"><span>Memory is an index. Original task records and files remain authoritative in their own stores.</span><span class="refresh-label"><i aria-hidden="true"></i><span id="refresh-status">Ready</span></span></footer>
+    </section>
+  </main>
+  <script src="__BASE_PATH__/assets/cytoscape.umd.js"></script>
+  <script type="module" src="__BASE_PATH__/assets/app.js"></script>
+</body>
+</html>

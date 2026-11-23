@@ -1,0 +1,23 @@
+.blog-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(22rem, 38rem); align-items: start; gap: clamp(3rem, 8vw, 8rem); padding-top: clamp(3rem, 9vh, 6rem); }
+.blog-intro { max-width: 39rem; }
+.blog-intro h1 { margin: 0; font-size: clamp(2.5rem, 5vw, 3.75rem); font-weight: 300; letter-spacing: -0.035em; line-height: 1.1; }
+.blog-intro > p:not(.cds--eyebrow) { margin-top: 1.25rem; color: var(--cds-text-secondary); font-size: 1.0625rem; }
+.blog-security { display: grid; gap: 0.25rem; margin-top: 2.5rem; padding: 1rem 1.25rem; border-left: 3px solid #0f62fe; background: #262626; }
+.blog-security strong { font-size: 0.875rem; }
+.blog-security span { color: var(--cds-text-secondary); font-size: 0.875rem; }
+.blog-panel { display: grid; gap: 0.625rem; padding: 2rem; }
+.blog-panel h2 { margin: 0 0 0.5rem; font-size: 1.5rem; font-weight: 400; }
+.blog-panel p { color: var(--cds-text-secondary); font-size: 0.875rem; line-height: 1.55; }
+.blog-panel b { color: var(--cds-text-primary); font-weight: 600; }
+.blog-panel .cds--button { margin-top: 0.5rem; }
+.blog-secret-label { margin-top: 0.5rem; }
+.blog-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.blog-actions .cds--button { margin-top: 0; }
+#enroll { display: none; }
+#connections { overflow: auto; max-height: 14rem; margin: 0; padding: 0.75rem; background: #161616; color: #c6c6c6; font: 0.75rem/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
+.blog-footnote { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--cds-border-subtle-01); }
+
+@media (max-width: 760px) {
+  .blog-layout { grid-template-columns: 1fr; gap: 2rem; padding-top: 2rem; }
+  .blog-panel { padding: 1.5rem; }
+}
